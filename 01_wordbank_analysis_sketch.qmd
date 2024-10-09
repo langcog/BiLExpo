@@ -1,0 +1,51 @@
+---
+title: "Initial Analysis of Wordbank Data"
+author: "George, Alvin, Julien, ..."
+format: html
+editor: visual
+---
+
+## Goals
+
+Let's run some of our initial model ideas on the bilingual data that is already in Wordbank.
+
+## Get Data
+
+```{r}
+require(tidyverse)
+require(wordbankr)
+
+# ToDo: get non-English bilingual datasets
+en_admins <- get_administration_data(language="English (American)", 
+                                     include_language_exposure = T) |>
+  unnest(language_exposures, names_sep = "_") |>
+  filter(language_exposures_language!="NA") |>
+  rename(exposure_language = language_exposures_language,
+         exposure_proportion = language_exposures_exposure_proportion,
+         age_first_exposed = language_exposures_age_of_first_exposure)
+
+# only 2 non-NA datapoints on age of first exposure...so let's drop that.
+#table(en_admins$age_first_exposed)
+
+sort(table(en_admins$exposure_language)) # 52 languages, from Albanian to Yemba
+# A lot of (i.e. >500) Spanish, French, and English
+#sum(is.na(en_admins$exposure_language)) # 0
+
+table(en_admins$exposure_language)
+
+# just identify test language (English) vs. "Other" (L2, though maybe in some cases English is L2..)
+bilingual_data <- en_admins |>
+  select(-age_first_exposed, -is_norming, -date_of_test) |>
+  mutate(exposure_language = ifelse(exposure_language=="English", "English", "Other")) |>
+  pivot_wider(id_cols = c(data_id,age,comprehension,production), 
+              names_from = exposure_language, values_from = exposure_proportion)
+
+```
+
+Some weirdness in the data: if exposure is listed for only one language (e.g. English), should we assume the second language gets the rest of the exposure? (There may also be a third/more languages...)
+
+Will discuss with Alvin how he has addressed these issue before.
+
+```{r}
+
+```
