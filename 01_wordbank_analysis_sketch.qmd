@@ -2,50 +2,129 @@
 title: "Initial Analysis of Wordbank Data"
 author: "George, Alvin, Julien, ..."
 format: html
-editor: visual
+editor: source
 ---
 
-## Goals
-
-Let's run some of our initial model ideas on the bilingual data that is already in Wordbank.
-
-## Get Data
+## Setup
+```{r}
+knitr::opts_chunk$set(message = FALSE)
+```
 
 ```{r}
-require(tidyverse)
-require(wordbankr)
+library(tidyverse)
+library(wordbankr)
+library(glue)
+library(gamlss)
 
-# ToDo: get non-English bilingual datasets
-en_admins <- get_administration_data(language="English (American)", 
-                                     include_language_exposure = T) |>
+theme_set(theme_classic())
+```
+
+## Get data 
+Get all datasets explicitly labelled "bilingual"
+```{r}
+bilingual_datasets <- get_datasets() |> 
+  filter(str_detect(dataset_origin_name, "Bilingual"))
+```
+
+Wrangle exposure data
+```{r}
+bilingual_data <- get_administration_data(include_demographic_info = TRUE,
+                                          include_language_exposure = TRUE) |> 
+  filter(dataset_origin_name %in% bilingual_datasets$dataset_origin_name) |>
   unnest(language_exposures, names_sep = "_") |>
-  filter(language_exposures_language!="NA") |>
+  filter(!is.na(language_exposures_language),
+         !is.na(language_exposures_exposure_proportion)) |>
   rename(exposure_language = language_exposures_language,
          exposure_proportion = language_exposures_exposure_proportion,
-         age_first_exposed = language_exposures_age_of_first_exposure)
+         age_first_exposed = language_exposures_age_of_first_exposure) |>
+  select(-c(age_first_exposed, is_norming, date_of_test)) |> 
+  filter(str_detect(language, glue("^{exposure_language}")))
 
-# only 2 non-NA datapoints on age of first exposure...so let's drop that.
-#table(en_admins$age_first_exposed)
-
-sort(table(en_admins$exposure_language)) # 52 languages, from Albanian to Yemba
-# A lot of (i.e. >500) Spanish, French, and English
-#sum(is.na(en_admins$exposure_language)) # 0
-
-table(en_admins$exposure_language)
-
-# just identify test language (English) vs. "Other" (L2, though maybe in some cases English is L2..)
-bilingual_data <- en_admins |>
-  select(-age_first_exposed, -is_norming, -date_of_test) |>
-  mutate(exposure_language = ifelse(exposure_language=="English", "English", "Other")) |>
-  pivot_wider(id_cols = c(data_id,age,comprehension,production), 
-              names_from = exposure_language, values_from = exposure_proportion)
-
+# The Armon-Lotem data only have 4 values for exposure_proportion
+bilingual_data_clean <- bilingual_data |> 
+  filter(dataset_origin_name != "Armon-Lotem_Hebrew_English_Bilingual")
 ```
 
-Some weirdness in the data: if exposure is listed for only one language (e.g. English), should we assume the second language gets the rest of the exposure? (There may also be a third/more languages...)
-
-Will discuss with Alvin how he has addressed these issue before.
-
+## Preprocess data
 ```{r}
-
+all_instruments <- bilingual_data_clean |> 
+  distinct(language, form)
 ```
+
+Find number of items on each form
+```{r}
+items <- map2(all_instruments$language, all_instruments$form, get_item_data) |> 
+  list_rbind() |> 
+  group_by(language, form) |> 
+  filter(item_kind == "word") |> 
+  summarise(n = n(), .groups = "drop")
+
+bilingual_data_prop <- bilingual_data_clean |> 
+  left_join(items, by = join_by(language, form)) |> 
+  mutate(prop_prod = production / n,
+         prop_prod = case_when(
+           prop_prod == 0 ~ .001,
+           prop_prod == 1 ~ .999,
+           .default = prop_prod
+         ))
+```
+
+Filter down to just Eng (Am) data for now
+```{r}
+bilingual_data_prop_en <- bilingual_data_prop |> 
+  filter(language == "English (American)")
+```
+
+## Run models
+Fit GAMLSS model with monotonic spline for exposure
+```{r}
+gam_nonlinear <- gamlss(prop_prod ~ pbm(age, lambda = 10000) * 
+                          pbm(exposure_proportion, lambda = 10000),
+                        sigma.formula = ~ pbm(age, lambda = 10000) * 
+                          pbm(exposure_proportion, lambda = 10000),
+                        data = bilingual_data_prop_en |> 
+                          select(prop_prod, age, exposure_proportion),
+                        family = BE,
+                        control = gamlss.control(n.cyc = 50))
+```
+
+Plot model predictions 
+```{r}
+pred_params <- expand_grid(age = 17:36, 
+                           exposure_proportion = seq(0, 100, length.out = 20))
+preds <- predict(gam_nonlinear,
+                 newdata = pred_params,
+                 type = "response")
+gam_nonlinear_preds <- pred_params |> cbind(preds)
+
+ggplot(gam_nonlinear_preds,
+       aes(x = age, y = preds, 
+           col = exposure_proportion, 
+           group = exposure_proportion)) +
+  geom_line() +
+  labs(x = "Age", y = "Proportion produced", col = "Exposure proportion")
+```
+
+Compare with linear exposure term
+```{r}
+gam_linear <- gamlss(prop_prod ~ pbm(age, lambda = 10000) * 
+                       exposure_proportion,
+                     sigma.formula = ~ pbm(age, lambda = 10000) * 
+                       exposure_proportion,
+                     data = bilingual_data_prop_en |> 
+                       select(prop_prod, age, exposure_proportion),
+                     family = BE,
+                        control = gamlss.control(n.cyc = 50))
+
+# LRfunc credit: https://sakai.unc.edu/access/content/group/3d1eb92e-7848-4f55-90c3-7c72a54e7e43/public/docs/lectures/lecture18.htm
+LRfunc <- function(x, y) {
+  LR <- 2 * (logLik(y) - logLik(x))
+  df <- attr(logLik(y), "df") - attr(logLik(x), "df")
+  p <- 1 - pchisq(LR, df)[1]
+  out <- data.frame(LR = LR, df = df, p = p)
+  print(out, row.names = F)
+}
+
+LRfunc(gam_linear, gam_nonlinear)
+```
+The model with a nonlinear exposure term is significantly better than the model with a linear exposure term (using a likelihood ratio test). (This result also holds if you use AIC for model selection, but there is no significant difference using BIC.)
