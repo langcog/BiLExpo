@@ -105,6 +105,16 @@ ggplot(gam_nonlinear_preds,
   labs(x = "Age", y = "Proportion produced", col = "Exposure proportion")
 ```
 
+```{r}
+ggplot(gam_nonlinear_preds,
+       aes(x = exposure_proportion, y = preds, 
+           col = age, 
+           group = age)) +
+  geom_line() +
+  labs(x = "Exposure proportion", y = "Proportion produced", col = "Age")
+```
+
+
 Compare with linear exposure term
 ```{r}
 gam_linear <- gamlss(prop_prod ~ pbm(age, lambda = 10000) * 
