@@ -142,3 +142,31 @@ LRfunc <- function(x, y) {
 LRfunc(gam_linear, gam_nonlinear)
 ```
 The model with a nonlinear exposure term is significantly better than the model with a linear exposure term (using a likelihood ratio test). (This result also holds if you use AIC for model selection, but there is no significant difference using BIC.)
+
+Now fitting on data from all current languages
+```{r}
+gam_nonlinear_all <- gamlss(prop_prod ~ pbm(age, lambda = 10000) * 
+                              pbm(exposure_proportion, lambda = 10000) +
+                              re(random = ~ 1 | child_id, level = 0) +
+                              re(random = ~ 1 | language, level = 0),
+                            sigma.formula = ~ pbm(age, lambda = 10000) * 
+                              pbm(exposure_proportion, lambda = 10000),
+                            data = bilingual_data_prop |> 
+                              select(prop_prod, age, exposure_proportion, 
+                                     child_id, language),
+                            family = BE,
+                            control = gamlss.control(n.cyc = 100))
+gam_linear_all <- gamlss(prop_prod ~ pbm(age, lambda = 10000) * 
+                           exposure_proportion +
+                           re(random = ~ 1 | child_id, level = 0) +
+                           re(random = ~ 1 | language, level = 0),
+                         sigma.formula = ~ pbm(age, lambda = 10000) * 
+                           exposure_proportion,
+                         data = bilingual_data_prop |> 
+                           select(prop_prod, age, exposure_proportion, 
+                                  child_id, language),
+                         family = BE,
+                         control = gamlss.control(n.cyc = 100))
+LRfunc(gam_linear_all, gam_nonlinear_all)
+```
+Not sure why the df difference is negative here (which results in a NaN p-value). Nonetheless AIC and BIC both prefer the nonlinear model.
