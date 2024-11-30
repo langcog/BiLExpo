@@ -168,5 +168,6 @@ gam_linear_all <- gamlss(prop_prod ~ pbm(age, lambda = 10000) *
                          family = BE,
                          control = gamlss.control(n.cyc = 100))
 LRfunc(gam_linear_all, gam_nonlinear_all)
+lmtest::lrtest(gam_linear_all, gam_nonlinear_all)
 ```
 Not sure why the df difference is negative here (which results in a NaN p-value). Nonetheless AIC and BIC both prefer the nonlinear model.
