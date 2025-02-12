@@ -23,7 +23,8 @@ theme_set(theme_classic())
 walk(list.files("scripts", full.names = TRUE), source)
 ```
 
-# Get data 
+# Vocabulary models
+## Get data 
 Get all datasets explicitly labelled "bilingual"
 ```{r}
 bilingual_datasets <- get_datasets() |> 
@@ -49,7 +50,7 @@ bilingual_data_clean <- bilingual_data |>
   filter(dataset_origin_name != "Armon-Lotem_Hebrew_English_Bilingual")
 ```
 
-# Preprocess data
+## Preprocess data
 ```{r}
 all_instruments <- bilingual_data_clean |> 
   distinct(language, form)
@@ -80,7 +81,6 @@ bilingual_data_prop_en <- bilingual_data_prop |>
   filter(language == "English (American)")
 ```
 
-# Run models
 ## Nonlinear model
 Fit GAMLSS model with monotonic spline for exposure
 ```{r}
@@ -296,7 +296,7 @@ gam_linear_all <- gamlss(prop_prod ~ pbm(age, lambda = 10000) *
 lrtest(gam_linear_all, gam_nonlinear_all)
 ```
 
-# Expanding to Spanish
+## Expanding to Spanish
 ```{r}
 data_spa <- bilingual_data_prop |> 
   filter(language == "Spanish (Mexican)") |> 
@@ -319,7 +319,7 @@ gam_nonlinear_spa_pe <- estimate_partials(gam_nonlinear_spa, term = "exposure_pr
 gam_nonlinear_eng_pe <- estimate_partials(gam_nonlinear, term = "exposure_proportion")
 ```
 
-## Permutation testing
+### Permutation testing
 Are the shapes of the splines different? We permute the labels at each value of `exposure_proportion` to determine whether the correlation between curves (discretised with dx = 1) is significantly greater than would be expected by chance.
 
 ```{r}
@@ -354,3 +354,50 @@ p_cor <- sum(obs_cor$cor <= perm_cor$cor) / NBOOT
 
 The splines are statistically different from permutation testing (observed correlation is greater than would be expected under the null distribution.)
 
+# Word-level models
+## Get data
+```{r}
+bilingual_admin_data <- get_administration_data(include_demographic_info = TRUE,
+                                                include_language_exposure = TRUE) |> 
+  filter(dataset_origin_name %in% bilingual_datasets$dataset_origin_name)
+
+bilingual_item_data <- map(unique(bilingual_admin_data$language), \(lang) {
+  get_instrument_data(
+    language = lang,
+    form = "WS",
+    administration_info = bilingual_admin_data,
+    item_info = TRUE)
+}) |> list_rbind() |> 
+  filter(dataset_origin_name %in% bilingual_datasets$dataset_origin_name) |>
+  unnest(language_exposures, names_sep = "_") |>
+  filter(!is.na(language_exposures_language),
+         !is.na(language_exposures_exposure_proportion)) |>
+  rename(exposure_language = language_exposures_language,
+         exposure_proportion = language_exposures_exposure_proportion,
+         age_first_exposed = language_exposures_age_of_first_exposure) |>
+  select(-c(age_first_exposed, is_norming, date_of_test)) |> 
+  filter(str_detect(language, glue("^{exposure_language}")))
+
+# The Armon-Lotem data only have 4 values for exposure_proportion
+bilingual_item_data_clean <- bilingual_item_data |> 
+  filter(dataset_origin_name != "Armon-Lotem_Hebrew_English_Bilingual")
+```
+
+## Fit model
+```{r}
+data_item <- bilingual_item_data_clean |> 
+  filter(dataset_origin_name == "Marchman Dallas Bilingual") |> 
+  select(produces, age, exposure_proportion, child_id, uni_lemma, item_id, language) |> 
+  na.omit()
+
+# this model takes ages to fit and will eat your memory! 
+gam_item_nonlinear <- gamlss(produces ~ age * 
+                               pbm(exposure_proportion, lambda = 10000) +
+                               re(random = ~ 1 | child_id, level = 0) +
+                               re(random = ~ 1 | uni_lemma, level = 0) +
+                               re(random = ~ 1 | item_id, level = 0) +
+                               re(random = ~ 1 | language, level = 0),
+                        data = data_item,
+                        family = BI,
+                        control = gamlss.control(n.cyc = 100))
+```
