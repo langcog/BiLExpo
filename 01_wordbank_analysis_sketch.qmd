@@ -5,21 +5,25 @@ format: html
 editor: source
 ---
 
-## Setup
+# Setup
 ```{r}
 knitr::opts_chunk$set(message = FALSE)
 ```
 
 ```{r}
 library(tidyverse)
-library(wordbankr)
+library(here)
 library(glue)
+library(wordbankr)
 library(gamlss)
+library(lmtest)
+library(qqplotr)
 
 theme_set(theme_classic())
+walk(list.files("scripts", full.names = TRUE), source)
 ```
 
-## Get data 
+# Get data 
 Get all datasets explicitly labelled "bilingual"
 ```{r}
 bilingual_datasets <- get_datasets() |> 
@@ -45,7 +49,7 @@ bilingual_data_clean <- bilingual_data |>
   filter(dataset_origin_name != "Armon-Lotem_Hebrew_English_Bilingual")
 ```
 
-## Preprocess data
+# Preprocess data
 ```{r}
 all_instruments <- bilingual_data_clean |> 
   distinct(language, form)
@@ -76,48 +80,175 @@ bilingual_data_prop_en <- bilingual_data_prop |>
   filter(language == "English (American)")
 ```
 
-## Run models
+# Run models
+## Nonlinear model
 Fit GAMLSS model with monotonic spline for exposure
 ```{r}
+data_mod <- bilingual_data_prop_en |> 
+                          select(prop_prod, age, exposure_proportion, child_id)
+
 gam_nonlinear <- gamlss(prop_prod ~ pbm(age, lambda = 10000) * 
                           pbm(exposure_proportion, lambda = 10000) +
                           re(random = ~ 1 | child_id, level = 0),
                         sigma.formula = ~ pbm(age, lambda = 10000) * 
                           pbm(exposure_proportion, lambda = 10000),
-                        data = bilingual_data_prop_en |> 
-                          select(prop_prod, age, exposure_proportion, child_id),
+                        data = data_mod,
                         family = BE,
                         control = gamlss.control(n.cyc = 100))
+
+# model checking:
+# look at outliers in q-q plot
+# some structure in fitted value resid plot?
+# 
+# can try fitting for each lang separately and check the curve shape (robustness checking)
 ```
 
 Plot model predictions 
 ```{r}
-pred_params <- expand_grid(age = 17:36, 
-                           exposure_proportion = seq(0, 100, length.out = 20),
-                           child_id = factor(0))
-preds <- predict(gam_nonlinear,
-                 newdata = pred_params,
-                 type = "response")
-gam_nonlinear_preds <- pred_params |> cbind(preds)
-
-ggplot(gam_nonlinear_preds,
-       aes(x = age, y = preds, 
-           col = exposure_proportion, 
-           group = exposure_proportion)) +
-  geom_line() +
-  labs(x = "Age", y = "Proportion produced", col = "Exposure proportion")
+plot_preds(gam_nonlinear)
 ```
 
 ```{r}
-ggplot(gam_nonlinear_preds,
-       aes(x = exposure_proportion, y = preds, 
-           col = age, 
-           group = age)) +
-  geom_line() +
-  labs(x = "Exposure proportion", y = "Proportion produced", col = "Age")
+plot_preds(gam_nonlinear, x = "age")
+```
+
+### Diagnostics
+```{r}
+plot(gam_nonlinear)
+```
+
+The default plots are not great; we manually plot some diagnostics of interest using ggplot
+
+Quantile residuals against fitted values. Some structure; this is corroborated in the wormplot.
+```{r}
+plot_resids(gam_nonlinear)
+```
+
+Q-Q plot
+```{r}
+plot_qq(gam_nonlinear)
+```
+
+Worm plot (detrended qq-plot)
+```{r}
+plot_wp(gam_nonlinear)
+```
+
+Trying to diagnose structure in residuals
+```{r}
+gam_nl_moddata <- plot_resids(gam_nonlinear, type = "o")
+ggplot(gam_nl_moddata,
+       aes(x = age, y = resid)) +
+  geom_hline(yintercept = 0, lty = "dashed") +
+  geom_point(alpha = .5) +
+  geom_smooth()
+```
+
+```{r}
+ggplot(gam_nl_moddata,
+       aes(x = exposure_proportion, y = resid)) +
+  geom_hline(yintercept = 0, lty = "dashed") +
+  geom_point(alpha = .5) +
+  geom_smooth()
+```
+
+### Partial effect plot
+```{r}
+plot_partial(gam_nonlinear)
+plot_partial(gam_nonlinear, x = "age")
+```
+
+## Fiddling with lambda
+### Fitting lambda
+```{r}
+gam_nonlinear_lmb <- gamlss(prop_prod ~ pbm(age, 
+                                            control = pbm.control(method = "GCV")) * 
+                              pbm(exposure_proportion, 
+                                  control = pbm.control(method = "GCV")) +
+                              re(random = ~ 1 | child_id, level = 0),
+                            sigma.formula = ~ pbm(age, 
+                                                  control = pbm.control(method = "GCV")) *  
+                              pbm(exposure_proportion, 
+                                  control = pbm.control(method = "GCV")),
+                            data = data_mod,
+                            family = BE,
+                            control = gamlss.control(n.cyc = 100))
+```
+
+Extract lambda values
+```{r}
+gam_nl_lmb <- tibble(
+  param = rep(c("mu", "sigma"), each = 2),
+  term = rep(c(1, 2), 2)
+) |> 
+  mutate(lambda = map2_dbl(param, term, \(p, t) getSmo(gam_nonlinear_lmb, p, which = t)$lambda),
+         term = factor(term, levels = c(1, 2), labels = c("age", "exposure_proportion")))
+```
+
+```{r}
+lrtest(gam_nonlinear, gam_nonlinear_lmb)
+```
+
+### Lower lambda model
+```{r}
+gam_nonlinear_low <- gamlss(prop_prod ~ pbm(age, lambda = 10) * 
+                              pbm(exposure_proportion, lambda = 10) +
+                              re(random = ~ 1 | child_id, level = 0),
+                            sigma.formula = ~ pbm(age, lambda = 10) *  
+                              pbm(exposure_proportion, lambda = 10),
+                            data = data_mod,
+                            family = BE,
+                            control = gamlss.control(n.cyc = 250))
+```
+
+### Even lower lambda model
+```{r}
+gam_nonlinear_lower <- gamlss(prop_prod ~ pbm(age, lambda = 1) * 
+                              pbm(exposure_proportion, lambda = 1) +
+                              re(random = ~ 1 | child_id, level = 0),
+                            sigma.formula = ~ pbm(age, lambda = 1) *  
+                              pbm(exposure_proportion, lambda = 1),
+                            data = data_mod,
+                            family = BE,
+                            control = gamlss.control(n.cyc = 250))
+```
+
+```{r}
+plot_partial(gam_nonlinear_lower)
+```
+
+## ZOIB model?
+```{r}
+data_zoib <- data_mod |> 
+  mutate(prop_prod = case_when(
+    prop_prod == .001 ~ 0,
+    prop_prod == .999 ~ 1,
+    .default = prop_prod
+  ))
+gam_nonlinear_zoib <- gamlss(prop_prod ~ pbm(age, lambda = 10000) * 
+                               pbm(exposure_proportion, lambda = 10000) +
+                               re(random = ~ 1 | child_id, level = 0),
+                             sigma.formula = ~ pbm(age, lambda = 10000) * 
+                               pbm(exposure_proportion, lambda = 10000),
+                             data = data_zoib,
+                             family = BEINF,
+                             control = gamlss.control(n.cyc = 100))
+```
+
+```{r}
+plot_preds(gam_nonlinear_zoib)
+```
+
+```{r}
+plot_preds(gam_nonlinear_zoib, x = "age")
+```
+
+```{r}
+plot_partial(gam_nonlinear_zoib)
 ```
 
 
+## Linear model
 Compare with linear exposure term
 ```{r}
 gam_linear <- gamlss(prop_prod ~ pbm(age, lambda = 10000) * 
@@ -130,30 +261,26 @@ gam_linear <- gamlss(prop_prod ~ pbm(age, lambda = 10000) *
                      family = BE,
                      control = gamlss.control(n.cyc = 100))
 
-# LRfunc credit: https://sakai.unc.edu/access/content/group/3d1eb92e-7848-4f55-90c3-7c72a54e7e43/public/docs/lectures/lecture18.htm
-LRfunc <- function(x, y) {
-  LR <- 2 * (logLik(y) - logLik(x))
-  df <- attr(logLik(y), "df") - attr(logLik(x), "df")
-  p <- 1 - pchisq(LR, df)[1]
-  out <- data.frame(LR = LR, df = df, p = p)
-  print(out, row.names = F)
-}
+# try nonlinear in mu, linear in sigma
+# or nonlinear in mu, NOT in sigma etc.
 
-LRfunc(gam_linear, gam_nonlinear)
+lrtest(gam_linear, gam_nonlinear)
 ```
 The model with a nonlinear exposure term is significantly better than the model with a linear exposure term (using a likelihood ratio test). (This result also holds if you use AIC for model selection, but there is no significant difference using BIC.)
 
 Now fitting on data from all current languages
 ```{r}
+data_plotting <- bilingual_data_prop |> 
+  select(prop_prod, age, exposure_proportion, 
+         child_id, language)
+
 gam_nonlinear_all <- gamlss(prop_prod ~ pbm(age, lambda = 10000) * 
                               pbm(exposure_proportion, lambda = 10000) +
                               re(random = ~ 1 | child_id, level = 0) +
                               re(random = ~ 1 | language, level = 0),
                             sigma.formula = ~ pbm(age, lambda = 10000) * 
                               pbm(exposure_proportion, lambda = 10000),
-                            data = bilingual_data_prop |> 
-                              select(prop_prod, age, exposure_proportion, 
-                                     child_id, language),
+                            data = data_plotting,
                             family = BE,
                             control = gamlss.control(n.cyc = 100))
 gam_linear_all <- gamlss(prop_prod ~ pbm(age, lambda = 10000) * 
@@ -162,12 +289,11 @@ gam_linear_all <- gamlss(prop_prod ~ pbm(age, lambda = 10000) *
                            re(random = ~ 1 | language, level = 0),
                          sigma.formula = ~ pbm(age, lambda = 10000) * 
                            exposure_proportion,
-                         data = bilingual_data_prop |> 
-                           select(prop_prod, age, exposure_proportion, 
-                                  child_id, language),
+                         data = data_plotting,
                          family = BE,
                          control = gamlss.control(n.cyc = 100))
-LRfunc(gam_linear_all, gam_nonlinear_all)
-lmtest::lrtest(gam_linear_all, gam_nonlinear_all)
+
+lrtest(gam_linear_all, gam_nonlinear_all)
 ```
-Not sure why the df difference is negative here (which results in a NaN p-value). Nonetheless AIC and BIC both prefer the nonlinear model.
+
+
