@@ -1,7 +1,7 @@
 plot_preds <- function(gam_mod, x = "exposure_proportion") {
   dat <- gam_mod$mu.coefSmo[[3]]$data # found by searching through `str()`
   pred_params <- expand_grid(age = seq(min(dat$age), max(dat$age)), 
-                             exposure_proportion = seq(0, 100, length.out = 20),
+                             exposure_proportion = seq(0, 100, by = 5),
                              child_id = factor(0))
   preds <- predict(gam_mod,
                    newdata = pred_params,
@@ -26,7 +26,7 @@ plot_preds <- function(gam_mod, x = "exposure_proportion") {
       labs(x = "Exposure proportion", 
            y = "Proportion produced", 
            col = "Age")
-  } else {
+  } else if (x == "df") {
     preds_plot
   }
 }
@@ -63,7 +63,7 @@ plot_resids <- function(gam_mod, type = "raw") {
       # coord_cartesian(ylim = c(-1, 1)) +
       labs(x = "Theoretical quantiles",
            y = "Detrended sample quantiles")
-  } else {
+  } else if (type == "df") {
     plot_dat
   }
 }
@@ -99,7 +99,7 @@ plot_partial <- function(gam_mod, x = "exposure_proportion") {
       geom_line(aes(y = part_exp), col = "darkorange") +
       labs(x = "Exposure proportion",
            y = "Partial effect of exposure proportion")
-  } else {
+  } else if (x == "df") {
     plot_data
-  }
+  } 
 }

@@ -296,4 +296,61 @@ gam_linear_all <- gamlss(prop_prod ~ pbm(age, lambda = 10000) *
 lrtest(gam_linear_all, gam_nonlinear_all)
 ```
 
+# Expanding to Spanish
+```{r}
+data_spa <- bilingual_data_prop |> 
+  filter(language == "Spanish (Mexican)") |> 
+  select(prop_prod, age, exposure_proportion, child_id)
+```
+
+```{r}
+gam_nonlinear_spa <- gamlss(prop_prod ~ pbm(age, lambda = 10000) * 
+                              pbm(exposure_proportion, lambda = 10000) +
+                              re(random = ~ 1 | child_id, level = 0),
+                            sigma.formula = ~ pbm(age, lambda = 10000) * 
+                              pbm(exposure_proportion, lambda = 10000),
+                            data = data_spa,
+                            family = BE,
+                            control = gamlss.control(n.cyc = 100))
+```
+
+```{r}
+gam_nonlinear_spa_pe <- estimate_partials(gam_nonlinear_spa, term = "exposure_proportion")
+gam_nonlinear_eng_pe <- estimate_partials(gam_nonlinear, term = "exposure_proportion")
+```
+
+## Permutation testing
+Are the shapes of the splines different? We permute the labels at each value of `exposure_proportion` to determine whether the correlation between curves (discretised with dx = 1) is significantly greater than would be expected by chance.
+
+```{r}
+gam_nonlinear_pe <- bind_rows(
+  gam_nonlinear_spa_pe |> mutate(language = "Spanish"),
+  gam_nonlinear_eng_pe |> mutate(language = "English")
+)
+
+obs_cor <- gam_nonlinear_pe |> 
+  pivot_wider(names_from = language, values_from = part_exp) |> 
+  summarise(cor = cor(Spanish, English))
+```
+
+```{r}
+NBOOT = 1000
+
+perm_cor <- map(1:NBOOT, \(i) {
+  gam_nonlinear_pe_perm <- gam_nonlinear_pe |> 
+    group_by(exposure_proportion) |> 
+    mutate(language = sample(language),
+           iter = i)
+}) |> list_rbind() |> 
+  pivot_wider(names_from = language, values_from = part_exp) |> 
+  group_by(iter) |> 
+  summarise(cor = cor(Spanish, English),
+            .groups = "drop")
+```
+
+```{r}
+p_cor <- sum(obs_cor$cor <= perm_cor$cor) / NBOOT
+```
+
+The splines are statistically different from permutation testing (observed correlation is greater than would be expected under the null distribution.)
 
