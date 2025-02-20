@@ -91,7 +91,7 @@ bilingual_data_prop_en <- bilingual_data_prop |>
 
 ## Nonlinear model
 Fit GAMLSS model with monotonic spline for exposure
-```{r}
+```{r, message=F}
 data_mod <- bilingual_data_prop_en |> 
                           select(prop_prod, age, exposure_proportion, child_id)
 
@@ -364,7 +364,7 @@ The splines are statistically different from permutation testing (observed corre
 
 # Word-level models
 ## Get data
-```{r}
+```{r, cache=T}
 bilingual_admin_data <- get_administration_data(include_demographic_info = TRUE,
                                                 include_language_exposure = TRUE) |> 
   filter(dataset_origin_name %in% bilingual_datasets$dataset_origin_name)
