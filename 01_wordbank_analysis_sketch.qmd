@@ -144,7 +144,7 @@ plot_wp(gam_nonlinear)
 
 Trying to diagnose structure in residuals
 ```{r}
-gam_nl_moddata <- plot_resids(gam_nonlinear, type = "o")
+gam_nl_moddata <- plot_resids(gam_nonlinear, type = "df")
 ggplot(gam_nl_moddata,
        aes(x = age, y = resid)) +
   geom_hline(yintercept = 0, lty = "dashed") +
