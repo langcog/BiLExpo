@@ -10,7 +10,7 @@ editor: source
 knitr::opts_chunk$set(message = FALSE)
 ```
 
-```{r}
+```{r, message=F}
 library(tidyverse)
 library(here)
 library(glue)
@@ -26,13 +26,13 @@ walk(list.files("scripts", full.names = TRUE), source)
 # Vocabulary models
 ## Get data 
 Get all datasets explicitly labelled "bilingual"
-```{r}
+```{r, cache=T}
 bilingual_datasets <- get_datasets() |> 
   filter(str_detect(dataset_origin_name, "Bilingual"))
 ```
 
 Wrangle exposure data
-```{r}
+```{r, cache=T}
 bilingual_data <- get_administration_data(include_demographic_info = TRUE,
                                           include_language_exposure = TRUE) |> 
   filter(dataset_origin_name %in% bilingual_datasets$dataset_origin_name) |>
@@ -73,6 +73,14 @@ bilingual_data_prop <- bilingual_data_clean |>
            .default = prop_prod
          ),
          child_id = as_factor(child_id))
+```
+
+View all data
+```{r}
+bilingual_data_prop |>
+  ggplot(aes(x = age, y=production, color=language)) +
+  geom_point(alpha=.2) + 
+  geom_smooth()
 ```
 
 Filter down to just Eng (Am) data for now
