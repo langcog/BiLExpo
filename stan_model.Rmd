@@ -3,6 +3,9 @@ title: "Hierarchical Bayesian Model"
 author: "George"
 date: "`r Sys.Date()`"
 output: html_document
+header-includes: 
+  - \usepackage{tikz}
+  - \usepackage{pgfplots}
 ---
 
 ```{r setup, include=FALSE}
@@ -44,6 +47,40 @@ The probability that child $i$ produces word $w$ in language $L$ (denoted by $y_
 $\text{Pr}(y_{i, w, L} = 1) = \text{logit}^{-1}(\eta_{i, L} - \beta_{w, L})$
 
 Thus, higher ability, age, or exposure in a given language increases the log-odds of production, while greater word difficulty (coming from the underlying concept and word-level deviation) decreases it.
+
+\begin{tikzpicture}
+  % Plates
+  \draw[thick] (-1.5, -1) rectangle (6, 2.5) node[above left] {Children \(I\)};
+  \draw[thick] (0.5, -0.5) rectangle (5.5, 2) node[above left] {Words \(W\)};
+  \draw[thick] (1, 0) rectangle (5, 1.5) node[above left] {Concepts \(C\)};
+  
+  % Nodes for child, word, concept
+  \node at (-.5, .5) (alpha) {$\alpha_i$};
+  \node at (-.5, 1.2) (gamma) {$\gamma$};
+  \node at (1.5, 1.7) (theta) {$\theta_c$};
+  \node at (3, 2.2) (delta) {$\delta_w$};
+  \node at (2.75, 1.25) (beta) {$\beta_{c,w}$};
+
+  % Exposure and language effect
+  \node at (1.5, 0.3) (lambda_L1) {$\lambda_{1}$};
+  \node at (4, 0.3) (lambda_L2) {$\lambda_{2}$};
+
+  % Arrows for dependencies
+  \draw[->] (alpha) -- (beta);
+  \draw[->] (gamma) -- (beta);
+  \draw[->] (theta) -- (beta);
+  \draw[->] (delta) -- (beta);
+  \draw[->] (lambda_L1) -- (beta);
+  \draw[->] (lambda_L2) -- (beta);
+
+  % Response node
+  \node at (6.5, .5) (y) {$y_n$};
+  \draw[->] (beta) -- (y);
+
+  % Plates
+  \draw[dashed] (-2.5, -1.5) rectangle (7, 3.5) node[above left] {Observations \(N\)};
+\end{tikzpicture}
+
 
 ## Generate data
 
@@ -120,7 +157,7 @@ stan_data <- list(
 
 # Model fitting
 
-```{r}
+```{r, eval=F}
 # Compile and fit the model with rstan
 rstan_options(auto_write = TRUE)
 options(mc.cores = parallel::detectCores())
@@ -135,7 +172,7 @@ print(fit, pars = c("mu_theta", "sigma_theta", "sigma_delta", "gamma", "lambda")
 
 # Posterior Predictive Check
 
-```{r}
+```{r, eval=F}
 # Extract generated quantities
 y_rep <- extract(fit)$y_rep
 
@@ -157,13 +194,13 @@ ggplot(df_ppc, aes(x = predicted, fill = factor(observed))) +
 ```
 
 
-```{r}
+```{r, eval=F}
 #  plot a PPC using bayesplot
 ppc_dens_overlay(y, y_rep[1:1000,])  # overlay density plots for a subset of replications
 ```
 
 
-```{r}
+```{r, eval=F}
 # Merge y_rep with the original data
 data_merged <- data.frame(
   child = stan_data$child,
@@ -177,7 +214,7 @@ data_merged <- data.frame(
 )
 ```
 
-```{r}
+```{r, eval=F}
 # Summarize total vocabulary size per child, by language
 vocab_summary <- data_merged |>
   group_by(child, age, lang, exposure_L1, exposure_L2) |>
@@ -191,7 +228,7 @@ vocab_summary_L1 <- filter(vocab_summary, lang == 1)
 vocab_summary_L2 <- filter(vocab_summary, lang == 2)
 ```
 
-```{r}
+```{r, eval=F}
 # Plot predicted total vocabulary in L1 by age and L1 exposure
 ggplot(vocab_summary_L1, aes(x = age, y = total_vocab_pred, color = exposure_L1)) +
   geom_point() +
@@ -225,4 +262,6 @@ ggplot(vocab_summary_L1, aes(x = age)) +
        color = "Vocabulary") +
   theme_minimal()
 ```
+
+
 
