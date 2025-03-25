@@ -16,6 +16,57 @@ library(bayesplot)
 library(rstan)
 ```
 
+```{r load-and-prep-data, include=F}
+bilingual_item_data_clean <- readRDS("data/bilingual_item_data_clean.Rds")
+
+pids <- unique(data_item$child_id)
+# 10 kids x 680 words x 2 langs = 13600 (but somehow 15440 data points?) - 43 minutes
+itids <- unique(data_item$item_id)
+# 144 kids x 200 words x 2 langs = 57600 (but somehow 72851?) - 252 minutes
+
+# full dataset (247913) should take: 3.4*252 / 60 = 14.3 hrs
+
+data_item <- bilingual_item_data_clean |> 
+  filter(dataset_origin_name == "Marchman Dallas Bilingual") |> 
+  #filter(is.element(child_id, sample(pids, 10))) |>
+  #filter(is.element(item_id, sample(itids, 200))) |>
+  select(produces, age, exposure_proportion, child_id, uni_lemma, item_id, language) |> 
+  na.omit()
+
+# Prepare data for Stan model
+stan_data <- list(
+  N = nrow(data_item),
+  I = length(unique(data_item$child_id)),
+  W = length(unique(data_item$uni_lemma)),
+  J = length(unique(data_item$item_id)),
+  L = length(unique(data_item$language)),
+  y = data_item$produces,
+  age = data_item$age,
+  exposure = data_item$exposure_proportion,
+  child = as.integer(factor(data_item$child_id)),
+  word = as.integer(factor(data_item$uni_lemma)),
+  item = as.integer(factor(data_item$item_id)),
+  lang = as.integer(factor(data_item$language))
+)
+```
+
+
+Let's try copying Alvin's GAMLSS model in Stan.
+
+```{r}
+fit <- stan(file = "models/model2.stan",
+            data = stan_data,
+            iter = 2000, warmup = 1000, chains = 4, seed = 123)
+```
+
+
+```{r}
+# Check the results
+print(fit)
+```
+
+
+
 Let's specify a hierarchical Bayesian model with a shared difficulty for each concept, which underlies the words in different languages, that can allow for language‐specific deviations at the word level. 
 The probability that child $i$ produces word $w$ in language $L$ is modeled as a function of the child's age, their language-specific exposure, the shared conceptual difficulty, and a word-level deviation. 
 

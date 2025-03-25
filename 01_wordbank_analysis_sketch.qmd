@@ -389,6 +389,8 @@ bilingual_item_data <- map(unique(bilingual_admin_data$language), \(lang) {
 # The Armon-Lotem data only have 4 values for exposure_proportion
 bilingual_item_data_clean <- bilingual_item_data |> 
   filter(dataset_origin_name != "Armon-Lotem_Hebrew_English_Bilingual")
+
+saveRDS(bilingual_item_data_clean, "data/bilingual_item_data_clean.Rds")
 ```
 
 ## Fit model
