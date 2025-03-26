@@ -11,6 +11,7 @@ header-includes:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
+require(tidyverse)
 library(ggplot2)
 library(bayesplot)
 library(rstan)
@@ -21,19 +22,19 @@ library(rstan)
 ```{r load-and-prep-data, include=F}
 bilingual_item_data_clean <- readRDS("data/bilingual_item_data_clean.Rds")
 
-pids <- unique(data_item$child_id)
-# 10 kids x 680 words x 2 langs = 13600 (but somehow 15440 data points?) - 43 minutes
-itids <- unique(data_item$item_id)
-# 144 kids x 200 words x 2 langs = 57600 (but somehow 72851?) - 252 minutes
-
 # full dataset (247913) should take: 3.4*252 / 60 = 14.3 hrs
-
 data_item <- bilingual_item_data_clean |> 
   filter(dataset_origin_name == "Marchman Dallas Bilingual") |> 
   #filter(is.element(child_id, sample(pids, 10))) |>
   #filter(is.element(item_id, sample(itids, 200))) |>
   select(produces, age, exposure_proportion, child_id, uni_lemma, item_id, language) |> 
   na.omit()
+
+pids <- unique(data_item$child_id)
+# 10 kids x 680 words x 2 langs = 13600 (but somehow 15440 data points?) - 43 minutes
+itids <- unique(data_item$item_id)
+# 144 kids x 200 words x 2 langs = 57600 (but somehow 72851?) - 252 minutes
+
 
 # Prepare data for Stan model
 stan_data <- list(
@@ -61,6 +62,7 @@ options(mc.cores = parallel::detectCores())
 
 fit <- stan(file = "models/model2.stan",
             data = stan_data,
+            model_name = "linear",
             iter = 4000, warmup = 1000, chains = 4, seed = 123)
 saveRDS(fit, file="models/model2_fit.rds")
 ```
@@ -128,10 +130,11 @@ stan_data <- list(
 
 ```{r, eval=F}
 rstan_options(auto_write = TRUE)
-options(mc.cores = 4) # parallel::detectCores()) # uses efficiency cores, too?
+options(mc.cores = parallel::detectCores()) 
 
 fit <- stan(file = "models/model3-spline.stan",
             data = stan_data,
+            model_name = "spline",
             iter = 3000, warmup = 1000, chains = 4, seed = 123)
 saveRDS(fit, file="models/model3-spline_fit.rds")
 ```
