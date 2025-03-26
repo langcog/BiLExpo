@@ -5,6 +5,7 @@ data {
   int<lower=1> J;              // number of items
   int<lower=1> L;              // number of languages
   int<lower=0,upper=1> y[N];   // binary outcome: word produced or not
+  matrix[N, 4] age_spline;     // spline basis for age with 4 degrees of freedom
   vector[N] age;               // age of the child
   vector[N] exposure;          // exposure proportion for each observation
   int<lower=1,upper=I> child[N];    // child_id
@@ -16,7 +17,7 @@ data {
 parameters {
   // Fixed effects
   real alpha;                       // intercept
-  real beta_age;                    // fixed effect for age
+  vector[4] beta_age_spline;        // spline coefficients for age
   real beta_exposure;               // fixed effect for exposure proportion
   real beta_age_exposure;           // interaction: age * exposure
 
@@ -39,9 +40,9 @@ transformed parameters {
   // Compute eta here
   for (n in 1:N) {
     eta[n] = alpha 
-             + beta_age * age[n] 
+             + age_spline[n] * beta_age_spline  // nonlinear effect of age
              + beta_exposure * exposure[n]
-             + beta_age_exposure * age[n] * exposure[n]
+             + beta_age_exposure * (age_spline[n] * beta_age_spline) * exposure[n]
              + u_child[child[n]]
              + u_word[word[n]]
              + u_item[item[n]]
@@ -52,6 +53,7 @@ transformed parameters {
 model {
   // Priors
   alpha ~ normal(0, 5);
+  beta_age_spline ~ normal(0, 1);    // Prior on spline coefficients
   beta_age ~ normal(0, 1);
   beta_exposure ~ normal(0, 1);
   beta_age_exposure ~ normal(0, 1);
@@ -71,6 +73,7 @@ model {
   // Bernoulli likelihood for word production
   y ~ bernoulli_logit(eta);
 }
+
 generated quantities {
   // Predictive draws for each observation
   int y_rep[N];

@@ -16,6 +16,8 @@ library(bayesplot)
 library(rstan)
 ```
 
+## Load data
+
 ```{r load-and-prep-data, include=F}
 bilingual_item_data_clean <- readRDS("data/bilingual_item_data_clean.Rds")
 
@@ -53,17 +55,96 @@ stan_data <- list(
 
 Let's try copying Alvin's GAMLSS model in Stan.
 
-```{r}
+```{r, eval=F}
+rstan_options(auto_write = TRUE) 
+options(mc.cores = parallel::detectCores())
+
 fit <- stan(file = "models/model2.stan",
             data = stan_data,
-            iter = 2000, warmup = 1000, chains = 4, seed = 123)
+            iter = 4000, warmup = 1000, chains = 4, seed = 123)
+saveRDS(fit, file="models/model2_fit.rds")
 ```
+
 
 
 ```{r}
 # Check the results
+fit <- readRDS("models/model2_fit.rds")
 print(fit)
 ```
+
+## Posterior Predictive Check
+
+```{r, eval=F}
+# Extract generated quantities
+y_rep <- extract(fit)$y_rep
+
+# For example, compute the posterior predictive mean for each observation
+y_rep_mean <- apply(y_rep, 2, mean)
+
+# Plot observed vs. predicted probabilities (or frequencies)
+df_ppc <- data.frame(
+  observed = y,
+  predicted = y_rep_mean
+)
+
+ggplot(df_ppc, aes(x = predicted, fill = factor(observed))) +
+  geom_histogram(position = "dodge", bins = 30) +
+  labs(title = "Posterior Predictive Distribution",
+       x = "Predicted probability",
+       fill = "Observed (0/1)") +
+  theme_minimal()
+```
+
+
+# Model 3: Non-linear Effect of Age
+
+
+```{r}
+library(splines)
+
+# Generate a B-spline basis for age with 4 degrees of freedom
+age_spline <- bs(data_item$age, df = 4)
+
+# Add the spline basis to your data
+data_item <- cbind(data_item, age_spline)
+
+# Prepare the Stan data list
+stan_data <- list(
+  N = nrow(data_item),
+  I = length(unique(data_item$child_id)),
+  W = length(unique(data_item$uni_lemma)),
+  J = length(unique(data_item$item_id)),
+  L = length(unique(data_item$language)),
+  y = data_item$produces,
+  exposure = data_item$exposure_proportion,
+  child = as.integer(as.factor(data_item$child_id)),
+  word = as.integer(as.factor(data_item$uni_lemma)),
+  item = as.integer(as.factor(data_item$item_id)),
+  lang = as.integer(as.factor(data_item$language)),
+  age_spline = as.matrix(age_spline)  # Pass spline basis as a matrix
+)
+```
+
+```{r, eval=F}
+rstan_options(auto_write = TRUE) # 1000 transitions using 10 leapfrog steps per transition would take 337.84 seconds.
+options(mc.cores = parallel::detectCores())
+
+fit <- stan(file = "models/model3-spline.stan",
+            data = stan_data,
+            iter = 4000, warmup = 1000, chains = 4, seed = 123)
+saveRDS(fit, file="models/model3-spline_fit.rds")
+```
+
+```{r}
+# Check the results
+fit <- readRDS("models/model3-spline_fit.rds")
+print(fit)
+```
+
+## Posterior Predictive Check
+
+
 
 
 
