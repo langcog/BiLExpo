@@ -6,7 +6,6 @@ data {
   int<lower=1> L;              // number of languages
   int<lower=0,upper=1> y[N];   // binary outcome: word produced or not
   matrix[N, 4] age_spline;     // spline basis for age with 4 degrees of freedom
-  vector[N] age;               // age of the child
   vector[N] exposure;          // exposure proportion for each observation
   int<lower=1,upper=I> child[N];    // child_id
   int<lower=1,upper=W> word[N];     // uni_lemma (word random effect)
@@ -54,7 +53,6 @@ model {
   // Priors
   alpha ~ normal(0, 5);
   beta_age_spline ~ normal(0, 1);    // Prior on spline coefficients
-  beta_age ~ normal(0, 1);
   beta_exposure ~ normal(0, 1);
   beta_age_exposure ~ normal(0, 1);
 

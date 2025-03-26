@@ -106,7 +106,7 @@ library(splines)
 # Generate a B-spline basis for age with 4 degrees of freedom
 age_spline <- bs(data_item$age, df = 4)
 
-# Add the spline basis to your data
+# Add the spline basis 
 data_item <- cbind(data_item, age_spline)
 
 # Prepare the Stan data list
@@ -127,12 +127,12 @@ stan_data <- list(
 ```
 
 ```{r, eval=F}
-rstan_options(auto_write = TRUE) # 1000 transitions using 10 leapfrog steps per transition would take 337.84 seconds.
-options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE)
+options(mc.cores = 4) # parallel::detectCores()) # uses efficiency cores, too?
 
 fit <- stan(file = "models/model3-spline.stan",
             data = stan_data,
-            iter = 4000, warmup = 1000, chains = 4, seed = 123)
+            iter = 3000, warmup = 1000, chains = 4, seed = 123)
 saveRDS(fit, file="models/model3-spline_fit.rds")
 ```
 
