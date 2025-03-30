@@ -15,26 +15,28 @@ require(tidyverse)
 library(ggplot2)
 library(bayesplot)
 library(rstan)
+
+source("scripts/stan_helpers.R")
 ```
 
 ## Load data
 
 ```{r load-and-prep-data, include=F}
 bilingual_item_data_clean <- readRDS("data/bilingual_item_data_clean.Rds")
-
-# full dataset (247913) should take: 3.4*252 / 60 = 14.3 hrs
 data_item <- bilingual_item_data_clean |> 
-  filter(dataset_origin_name == "Marchman Dallas Bilingual") |> 
-  #filter(is.element(child_id, sample(pids, 10))) |>
-  #filter(is.element(item_id, sample(itids, 200))) |>
-  select(produces, age, exposure_proportion, child_id, uni_lemma, item_id, language) |> 
-  na.omit()
+  filter(dataset_origin_name == "Marchman Dallas Bilingual")
 
 pids <- unique(data_item$child_id)
 # 10 kids x 680 words x 2 langs = 13600 (but somehow 15440 data points?) - 43 minutes
 itids <- unique(data_item$item_id)
 # 144 kids x 200 words x 2 langs = 57600 (but somehow 72851?) - 252 minutes
 
+# full dataset (247913) should take: 3.4*252 / 60 = 14.3 hrs
+data_item <- data_item |> 
+  #filter(is.element(child_id, sample(pids, 10))) |>
+  filter(is.element(item_id, sample(itids, 300))) |>
+  select(produces, age, exposure_proportion, child_id, uni_lemma, item_id, language) |> 
+  na.omit()
 
 # Prepare data for Stan model
 stan_data <- list(
@@ -135,19 +137,89 @@ options(mc.cores = parallel::detectCores())
 fit <- stan(file = "models/model3-spline.stan",
             data = stan_data,
             model_name = "spline",
-            iter = 3000, warmup = 1000, chains = 4, seed = 123)
+            control = list(max_treedepth=12),
+            iter = 2500, warmup = 1000, chains = 4, seed = 123,
+            thin = 2)
 saveRDS(fit, file="models/model3-spline_fit.rds")
 ```
 
 ```{r}
 # Check the results
 fit <- readRDS("models/model3-spline_fit.rds")
-print(fit)
+#print(fit)
 ```
 
 ## Posterior Predictive Check
 
 
+```{r}
+plot(fit)
+```
+
+```{r}
+posterior_samples <- extract(fit)
+beta_age_spline <- posterior_samples$beta_age_spline
+
+age_range <- seq(min(data_item$age), max(data_item$age), length.out = 100)
+
+# Create the spline basis for the age range (using the same settings as in your STAN model)
+age_spline_basis <- ns(age_range, df = 4)  # 4 degrees of freedom used in your STAN model
+
+# Calculate the predicted spline for the mean of the posterior samples
+mean_beta_age_spline <- colMeans(beta_age_spline)
+
+predicted_spline <- age_spline_basis %*% mean_beta_age_spline  # Predicted values
+
+ggplot(data = data.frame(age_range, predicted_spline), aes(x = age_range, y = predicted_spline)) +
+  geom_line(color = "blue", size = 1) +
+  labs(x = "Age", y = "Predicted Spline Effect", title = "Fitted Spline for Age") +
+  theme_minimal()
+```
+
+```{r}
+# Generate predicted splines for each posterior sample
+predicted_splines <- age_spline_basis %*% t(beta_age_spline)
+
+# Compute the 2.5th and 97.5th percentiles for the uncertainty intervals
+ci_lower <- apply(predicted_splines, 1, quantile, probs = 0.025)
+ci_upper <- apply(predicted_splines, 1, quantile, probs = 0.975)
+
+spline_df <- data.frame(age_range, predicted_spline, ci_lower, ci_upper)
+
+# Plot with credible intervals
+ggplot(spline_df, aes(x = age_range)) +
+  geom_line(aes(y = predicted_spline), color = "blue", size = 1) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, fill = "blue") +
+  labs(x = "Age", y = "Predicted Spline Effect", title = "Fitted Spline with 95% Credible Interval") +
+  theme_minimal()
+```
+
+```{r}
+plot_children(posterior_samples)
+plot_items(posterior_samples)
+```
+
+
+```{r, eval=F}
+# Extract generated quantities
+y_rep <- extract(fit)$y_rep
+
+# For example, compute the posterior predictive mean for each observation
+y_rep_mean <- apply(y_rep, 2, mean)
+
+# Plot observed vs. predicted probabilities (or frequencies)
+df_ppc <- data.frame(
+  observed = stan_data$y,
+  predicted = y_rep_mean
+)
+
+ggplot(df_ppc, aes(x = predicted, fill = factor(observed))) +
+  geom_histogram(position = "dodge", bins = 30) +
+  labs(title = "Posterior Predictive Distribution",
+       x = "Predicted probability",
+       fill = "Observed (0/1)") +
+  theme_minimal()
+```
 
 
 
