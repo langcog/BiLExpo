@@ -204,23 +204,75 @@ plot_items(posterior_samples)
 # Extract generated quantities
 y_rep <- extract(fit)$y_rep
 
-# For example, compute the posterior predictive mean for each observation
+# compute the posterior predictive mean for each observation
 y_rep_mean <- apply(y_rep, 2, mean)
 
-# Plot observed vs. predicted probabilities (or frequencies)
 df_ppc <- data.frame(
-  observed = stan_data$y,
-  predicted = y_rep_mean
+  observed = stan_data$y,                # Actual outcomes (binary: word produced or not)
+  predicted = y_rep_mean,                # Predicted probabilities
+  child = stan_data$child,               # Child ID for each observation
+  exposure = stan_data$exposure,
+  age = data_item$age
 )
 
-ggplot(df_ppc, aes(x = predicted, fill = factor(observed))) +
-  geom_histogram(position = "dodge", bins = 30) +
-  labs(title = "Posterior Predictive Distribution",
-       x = "Predicted probability",
-       fill = "Observed (0/1)") +
+df_ppc$residuals <- df_ppc$observed - df_ppc$predicted
+
+df_vocab <- df_ppc %>%
+  group_by(child) %>%
+  summarize(
+    total_observed_vocab = sum(observed),   # Total actual words produced by child
+    total_predicted_vocab = sum(predicted), # Total predicted vocabulary size
+    mean_age = mean(age),      # Average age per child (or replace with raw age if available)
+    exposure = mean(exposure)
+  )
+
+# Residuals vs age plot
+ggplot(df_ppc, aes(x = age, y = residuals)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "loess", color = "blue", se = FALSE) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Residuals vs. Age",
+    x = "Age",
+    y = "Residuals (Observed - Predicted)"
+  ) +
+  theme_minimal()
+
+ggplot(df_ppc, aes(x = exposure, y = residuals)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = "loess", color = "blue", se = FALSE) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Residuals vs. Exposure",
+    x = "Exposure",
+    y = "Residuals (Observed - Predicted)"
+  ) +
   theme_minimal()
 ```
 
+```{r}
+# Extend df_ppc to include total observed/predicted vocab per child
+df_ppc <- df_ppc %>%
+  group_by(child) %>%
+  mutate(
+    total_observed_vocab = sum(observed),   # Total actual words produced by child
+    total_predicted_vocab = sum(predicted), # Total predicted vocabulary size
+    mean_age_spline = mean(age_spline)      # Average age (or use actual age if available)
+  ) %>%
+  ungroup()
+
+# Posterior predictive distribution with facets for each child
+ggplot(df_ppc, aes(x = predicted, fill = factor(observed))) +
+  geom_histogram(position = "dodge", bins = 30) +
+  facet_wrap(~ child, ncol = 5) +  # Facet by child
+  labs(
+    title = "Posterior Predictive Distribution by Child",
+    x = "Predicted Probability",
+    fill = "Observed (0/1)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
 
 
 Let's specify a hierarchical Bayesian model with a shared difficulty for each concept, which underlies the words in different languages, that can allow for language‐specific deviations at the word level. 
