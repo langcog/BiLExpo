@@ -160,6 +160,12 @@ ggplot(gam_nl_moddata,
   geom_smooth()
 ```
 
+### Cross-validation
+```{r}
+#TODO
+```
+
+
 ### Partial effect plot
 ```{r}
 plot_partial(gam_nonlinear)
@@ -210,7 +216,7 @@ gam_nonlinear_low <- gamlss(prop_prod ~ pbm(age, lambda = 10) *
 ```
 
 ### Even lower lambda model
-```{r}
+```{r eval=F}
 gam_nonlinear_lower <- gamlss(prop_prod ~ pbm(age, lambda = 1) * 
                               pbm(exposure_proportion, lambda = 1) +
                               re(random = ~ 1 | child_id, level = 0),
@@ -362,6 +368,225 @@ p_cor <- sum(obs_cor$cor <= perm_cor$cor) / NBOOT
 
 The splines are statistically different from permutation testing (observed correlation is greater than would be expected under the null distribution.)
 
+## Cross-validation
+To determine the exact form of the model, we conduct 10-fold cross-validation with RMSE as the goodness-of-fit metric.
+
+```{r}
+set.seed(42)
+K = 10
+
+data_cv <- data_mod |> 
+  mutate(fold = sample(1:K, length(prop_prod), replace = TRUE))
+
+## using the in-built gamlssCV doesn't work unfortunately… not sure why
+# cv_mods <- gamlssCV(prop_prod ~ pbm(age, lambda = 10 ^ lmb) *
+#                     pbm(exposure_proportion, lambda = 10 ^ lmb) +
+#                     re(random = ~ 1 | child_id, level = 0),
+#                   sigma.formula = ~ pbm(age, lambda = 10 ^ lmb) *  
+#                     pbm(exposure_proportion, lambda = 10 ^ lmb),
+#                   data = data_mod,
+#                   family = BE,
+#                   control = gamlss.control(n.cyc = 100),
+#                   K.fold = K)
+
+
+cv_mods <- map(1:K, \(k) {
+  # horrendous global assigns, but for some reason gamlss is unable to find 
+  # function-scoped data DFs
+  data_train <<- data_cv |> filter(fold != k)
+  data_val <<- data_cv |> filter(fold == k)
+  
+  map(2:5, \(lmb) {
+    print(glue("k: {k}; lmb: {lmb}"))
+    tryCatch({
+      mod <- gamlss(prop_prod ~ pbm(age, lambda = 10 ^ lmb) *
+                      pbm(exposure_proportion, lambda = 10 ^ lmb) +
+                      re(random = ~ 1 | child_id, level = 0),
+                    sigma.formula = ~ pbm(age, lambda = 10 ^ lmb) *  
+                      pbm(exposure_proportion, lambda = 10 ^ lmb),
+                    data = data_train,
+                    family = BE,
+                    control = gamlss.control(n.cyc = 100),
+                    trace = FALSE)
+      data_out <- data_val |> 
+        mutate(preds = predict(mod,
+                               newdata = data_val,
+                               type = "response"))
+      rmse <- data_out |> 
+        mutate(err = preds - prop_prod,
+               sq_err = err ^ 2) |> 
+        summarise(rmse = sqrt(mean(sq_err, na.rm = TRUE))) |> 
+        pull(rmse)
+      
+      rm(mod)
+      
+      tibble(lambda = 10 ^ lmb,
+             preds = list(data_out),
+             rmse = rmse)
+    }, 
+    error = \(cond) {
+      tibble(lambda = 10 ^ lmb,
+             preds = NULL,
+             rmse = NA)
+    })
+  }) |> list_rbind() |> 
+    mutate(k = k)
+}) |> list_rbind()
+```
+
+```{r}
+cv_lin <- map(1:K, \(k) {
+  # horrendous global assigns, but for some reason gamlss is unable to find 
+  # function-scoped data DFs
+  data_train <<- data_cv |> filter(fold != k)
+  data_val <<- data_cv |> filter(fold == k)
+  
+  mod <- gamlss(prop_prod ~ pbm(age, lambda = 1e4) *
+                  exposure_proportion +
+                  re(random = ~ 1 | child_id, level = 0),
+                sigma.formula = ~ pbm(age, lambda = 1e4) *  
+                  exposure_proportion,
+                data = data_train,
+                family = BE,
+                control = gamlss.control(n.cyc = 100),
+                trace = FALSE)
+  
+  data_out <- data_val |> 
+    mutate(preds = predict(mod,
+                           newdata = data_val,
+                           type = "response"))
+  rmse <- data_out |> 
+    mutate(err = preds - prop_prod,
+           sq_err = err ^ 2) |> 
+    summarise(rmse = sqrt(mean(sq_err, na.rm = TRUE))) |> 
+    pull(rmse)
+  
+  tibble(lambda = 10 ^ 8,
+         preds = list(data_out),
+         rmse = rmse,
+         k = k)
+}) |> list_rbind()
+```
+
+
+```{r}
+ggplot(cv_mods, 
+       aes(x = log(lambda, base = 10),
+           y = rmse, 
+           col = factor(log(lambda, base = 10)))) + 
+  geom_line(aes(group = k), col = "grey", alpha = .5) +
+  geom_point(alpha = .5) + 
+  stat_summary(fun = mean,
+               fun.min = function(x) mean(x) - sd(x), 
+               fun.max = function(x) mean(x) + sd(x), 
+               geom = "pointrange") +
+  theme(legend.position = "none")
+```
+
+### Full grid search
+```{r}
+cv_full <- map(1:K, \(k) {
+  # horrendous global assigns, but for some reason gamlss is unable to find 
+  # function-scoped data DFs
+  data_train <<- data_cv |> filter(fold != k)
+  data_val <<- data_cv |> filter(fold == k)
+  
+  map(2:6, \(lmb_age) {
+    map(2:6, \(lmb_exp) {
+      print(glue("k: {k}; lmb_age: {lmb_age}; lmb_exp: {lmb_exp}"))
+      tryCatch({
+        if (lmb_age == 6 & lmb_exp == 6) {
+          mod <- gamlss(prop_prod ~ age *
+                        exposure_proportion +
+                        re(random = ~ 1 | child_id, level = 0),
+                      sigma.formula = ~ age *
+                        exposure_proportion,
+                      data = data_train,
+                      family = BE,
+                      control = gamlss.control(n.cyc = 100),
+                      trace = FALSE)
+        } else if (lmb_age == 6) {
+          mod <- gamlss(prop_prod ~ age *
+                        pbm(exposure_proportion, lambda = 10 ^ lmb_exp) +
+                        re(random = ~ 1 | child_id, level = 0),
+                      sigma.formula = ~ age *
+                        pbm(exposure_proportion, lambda = 10 ^ lmb_exp),
+                      data = data_train,
+                      family = BE,
+                      control = gamlss.control(n.cyc = 100),
+                      trace = FALSE)
+        } else if (lmb_exp == 6) {
+          mod <- gamlss(prop_prod ~ pbm(age, lambda = 10 ^ lmb_age) *
+                        exposure_proportion +
+                        re(random = ~ 1 | child_id, level = 0),
+                      sigma.formula = ~ pbm(age, lambda = 10 ^ lmb_age) *
+                        exposure_proportion,
+                      data = data_train,
+                      family = BE,
+                      control = gamlss.control(n.cyc = 100),
+                      trace = FALSE)
+        } else {
+          mod <- gamlss(prop_prod ~ pbm(age, lambda = 10 ^ lmb_age) *
+                        pbm(exposure_proportion, lambda = 10 ^ lmb_exp) +
+                        re(random = ~ 1 | child_id, level = 0),
+                      sigma.formula = ~ pbm(age, lambda = 10 ^ lmb_age) *  
+                        pbm(exposure_proportion, lambda = 10 ^ lmb_exp),
+                      data = data_train,
+                      family = BE,
+                      control = gamlss.control(n.cyc = 100),
+                      trace = FALSE)
+        }
+        
+        data_out <- data_val |> 
+          mutate(preds = predict(mod,
+                                 newdata = data_val,
+                                 type = "response"))
+        rmse <- data_out |> 
+          mutate(err = preds - prop_prod,
+                 sq_err = err ^ 2) |> 
+          summarise(rmse = sqrt(mean(sq_err, na.rm = TRUE))) |> 
+          pull(rmse)
+        
+        aic <- AIC(mod)
+        bic <- BIC(mod)
+        
+        rm(mod)
+        
+        tibble(lambda_age = 10 ^ lmb_age,
+               lambda_exp = 10 ^ lmb_exp,
+               preds = list(data_out),
+               rmse = rmse,
+               aic = aic,
+               bic = bic)
+      }, 
+      error = \(cond) {
+        tibble(lambda_age = 10 ^ lmb_age,
+               lambda_exp = 10 ^ lmb_exp,
+               preds = NULL,
+               rmse = NA,
+               aic = NA,
+               bic = NA)
+      })
+    }) |> list_rbind()
+  }) |> list_rbind() |> 
+    mutate(k = k)
+}) |> list_rbind()
+```
+
+```{r}
+ggplot(cv_full, 
+       aes(x = log(lambda_age, base = 10),
+           y = rmse, 
+           col = factor(log(lambda_age, base = 10)))) + 
+  geom_line(aes(group = lambda_exp), col = "grey", alpha = .5) +
+  geom_point(alpha = .5) + 
+  stat_summary(fun = mean,
+               fun.min = function(x) mean(x) - sd(x), 
+               fun.max = function(x) mean(x) + sd(x), 
+               geom = "pointrange") +
+  theme(legend.position = "none")
+```
+
 # Word-level models
 ## Get data
 ```{r, cache=T}
@@ -399,7 +624,9 @@ data_item <- bilingual_item_data_clean |>
   filter(dataset_origin_name == "Marchman Dallas Bilingual") |> 
   select(produces, age, exposure_proportion, child_id, uni_lemma, item_id, language) |> 
   na.omit()
+```
 
+```{r eval=F}
 # this model takes ages to fit and will eat your memory! 
 gam_item_nonlinear <- gamlss(produces ~ age * 
                                pbm(exposure_proportion, lambda = 10000) +
@@ -411,3 +638,22 @@ gam_item_nonlinear <- gamlss(produces ~ age *
                         family = BI,
                         control = gamlss.control(n.cyc = 100))
 ```
+
+## Quadratic exposure proportion model
+```{r}
+library(lme4)
+data_item_sc <- data_item |> 
+  mutate(age_sc = scale(age),
+         exp_sc = scale(exposure_proportion))
+
+glm_item_lin <- glmer(produces ~ age_sc * exp_sc +
+                        (1 | child_id) + (1 | uni_lemma) + (1 | item_id) + (1 | language),
+                      data = data_item_sc,
+                      family = binomial)
+
+glm_item_quad <- glmer(produces ~ age_sc * poly(exp_sc, 2) +
+                         (1 | child_id) + (1 | uni_lemma) + (1 | item_id) + (1 | language),
+                       data = data_item_sc,
+                       family = binomial)
+```
+
