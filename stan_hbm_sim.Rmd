@@ -1,0 +1,204 @@
+---
+title: 'HBM: Simulated Data'
+author: "George"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+require(tidyverse)
+library(ggplot2)
+library(bayesplot)
+library(rstan)
+```
+
+
+Let's specify a hierarchical Bayesian model with a shared difficulty for each concept, which underlies the words in different languages, that can allow for language‐specific deviations at the word level. 
+The probability that child $i$ produces word $w$ in language $L$ is modeled as a function of the child's age, their language-specific exposure, the shared conceptual difficulty, and a word-level deviation. 
+
+Concept Difficulty: For each concept $c$ (e.g., “dog”):
+
+$\theta_c \sim \mathcal{N}(\mu_{\theta}, \sigma_{\theta}^2)$
+
+Word-Level Deviation: For each word $w$ in language $L$ corresponding to concept $c$:
+
+$\delta_{w, L} \sim \mathcal{N}(0, \sigma_{\delta}^2)$
+
+Then the overall difficulty for word $w$ in language $L$ is:
+
+$\beta_{w, L} = \theta_c + \delta_{w, L}$
+
+## Child-Level Effects
+
+Each child $i$ has an ability (i.e. latent skill level) parameter $\alpha_i$, and the effect of age can be modeled separately (or absorbed into $\alpha_i$ if age is the primary driver). 
+Also, let exposure in language $L$ for child $i$ be $E_{i, L}$. 
+
+$\eta_{i, L} = \alpha_i + \gamma \cdot \text{age}_i + \lambda \cdot E_{i, L}$
+
+We could allow for cross-language influences by including an effect of exposure in the other language $E_{i, L'}$ with its own coefficient.
+
+## Linking to Word Production
+
+The probability that child $i$ produces word $w$ in language $L$ (denoted by $y_{i, w, L}$, typically 1 if produced and 0 otherwise) is given by:
+
+$\text{Pr}(y_{i, w, L} = 1) = \text{logit}^{-1}(\eta_{i, L} - \beta_{w, L})$
+
+Thus, higher ability, age, or exposure in a given language increases the log-odds of production, while greater word difficulty (coming from the underlying concept and word-level deviation) decreases it.
+
+\begin{tikzpicture}
+  % Plates
+  \draw[thick] (-1.5, -1) rectangle (6, 2.5) node[above left] {Children \(I\)};
+  \draw[thick] (0.5, -0.5) rectangle (5.5, 2) node[above left] {Words \(W\)};
+  \draw[thick] (1, 0) rectangle (5, 1.5) node[above left] {Concepts \(C\)};
+  
+  % Nodes for child, word, concept
+  \node at (-.5, .5) (alpha) {$\alpha_i$};
+  \node at (-.5, 1.2) (gamma) {$\gamma$};
+  \node at (1.5, 1.7) (theta) {$\theta_c$};
+  \node at (3, 2.2) (delta) {$\delta_w$};
+  \node at (2.75, 1.25) (beta) {$\beta_{c,w}$};
+
+  % Exposure and language effect
+  \node at (1.5, 0.3) (lambda_L1) {$\lambda_{1}$};
+  \node at (4, 0.3) (lambda_L2) {$\lambda_{2}$};
+
+  % Arrows for dependencies
+  \draw[->] (alpha) -- (beta);
+  \draw[->] (gamma) -- (beta);
+  \draw[->] (theta) -- (beta);
+  \draw[->] (delta) -- (beta);
+  \draw[->] (lambda_L1) -- (beta);
+  \draw[->] (lambda_L2) -- (beta);
+
+  % Response node
+  \node at (6.5, .5) (y) {$y_n$};
+  \draw[->] (beta) -- (y);
+
+  % Plates
+  \draw[dashed] (-2.5, -1.5) rectangle (7, 3.5) node[above left] {Observations \(N\)};
+\end{tikzpicture}
+
+
+## Generate data
+
+ToDo: replace this with real data (although we should also use the generated data to see how well different models recover the true simulated parameters).
+
+```{r generate-data}
+source(here::here("scripts/generate_data.R"))
+sim_df <- generate_data()
+stan_data <- get_stan_data(sim_df)
+```
+
+# Model fitting
+
+```{r, eval=F}
+# Compile and fit the model with rstan
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+
+fit <- stan(file = "models/model1.stan",
+            model_name = "baseline",
+            data = stan_data,
+            iter = 2000, warmup = 1000, chains = 4, seed = 123)
+
+print(fit, pars = c("mu_theta", "sigma_theta", "sigma_delta", "gamma", "lambda"))
+```
+
+# Posterior Predictive Check
+
+```{r, eval=F}
+# Extract generated quantities
+y_rep <- extract(fit)$y_rep
+
+# For example, compute the posterior predictive mean for each observation
+y_rep_mean <- apply(y_rep, 2, mean)
+
+# Plot observed vs. predicted probabilities (or frequencies)
+df_ppc <- data.frame(
+  observed = y,
+  predicted = y_rep_mean
+)
+
+ggplot(df_ppc, aes(x = predicted, fill = factor(observed))) +
+  geom_histogram(position = "dodge", bins = 30) +
+  labs(title = "Posterior Predictive Distribution",
+       x = "Predicted probability",
+       fill = "Observed (0/1)") +
+  theme_minimal()
+```
+
+
+```{r, eval=F}
+#  plot a PPC using bayesplot
+ppc_dens_overlay(y, y_rep[1:1000,])  # overlay density plots for a subset of replications
+```
+
+
+```{r, eval=F}
+# Merge y_rep with the original data
+data_merged <- data.frame(
+  child = stan_data$child,
+  word = stan_data$word,
+  age = stan_data$age,
+  lang = stan_data$lang,  # 1 = L1, 2 = L2
+  exposure_L1 = stan_data$exposure[stan_data$child, 1],  # L1 exposure for each child
+  exposure_L2 = stan_data$exposure[stan_data$child, 2],  # L2 exposure for each child
+  y_obs = stan_data$y,  # original observed data
+  y_pred = y_rep_mean  # posterior predictive mean
+)
+```
+
+```{r, eval=F}
+# Summarize total vocabulary size per child, by language
+vocab_summary <- data_merged |>
+  group_by(child, age, lang, exposure_L1, exposure_L2) |>
+  summarise(
+    total_vocab_pred = sum(y_pred),
+    total_vocab_obs = sum(y_obs)
+  )
+
+# Separate summary for L1 and L2
+vocab_summary_L1 <- filter(vocab_summary, lang == 1)
+vocab_summary_L2 <- filter(vocab_summary, lang == 2)
+```
+
+```{r, eval=F}
+# Plot predicted total vocabulary in L1 by age and L1 exposure
+ggplot(vocab_summary_L1, aes(x = age, y = total_vocab_pred, color = exposure_L1)) +
+  geom_point() +
+  geom_smooth(method = "loess", se = FALSE) +  # add a trend line
+  scale_color_gradient(low = "blue", high = "red") +  # exposure scale
+  labs(title = "Predicted Total Vocabulary in L1 by Age and Exposure",
+       x = "Age (months)", y = "Predicted Total Vocabulary (L1)",
+       color = "L1 Exposure") +
+  theme_minimal()
+
+# Plot predicted total vocabulary in L2 by age and L2 exposure
+ggplot(vocab_summary_L2, aes(x = age, y = total_vocab_pred, color = exposure_L2)) +
+  geom_point() +
+  geom_smooth(method = "loess", se = FALSE) +  # add a trend line
+  scale_color_gradient(low = "blue", high = "red") +  # exposure scale
+  labs(title = "Predicted Total Vocabulary in L2 by Age and Exposure",
+       x = "Age (months)", y = "Predicted Total Vocabulary (L2)",
+       color = "L2 Exposure") +
+  theme_minimal()
+
+# Optionally, combine observed and predicted vocabulary into the same plot
+
+ggplot(vocab_summary_L1, aes(x = age)) +
+  geom_point(aes(y = total_vocab_pred, color = "Predicted"), size = 2) +
+  geom_point(aes(y = total_vocab_obs, color = "Observed"), shape = 1, size = 2) +
+  geom_smooth(aes(y = total_vocab_pred, color = "Predicted"), method = "loess", se = FALSE) +
+  geom_smooth(aes(y = total_vocab_obs, color = "Observed"), method = "loess", se = FALSE, linetype = "dashed") +
+  scale_color_manual(values = c("Predicted" = "red", "Observed" = "blue")) +
+  labs(title = "Predicted vs Observed Total Vocabulary (L1) by Age",
+       x = "Age (months)", y = "Vocabulary Size (L1)",
+       color = "Vocabulary") +
+  theme_minimal()
+```
+
+
+
+
