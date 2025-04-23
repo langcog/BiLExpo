@@ -17,7 +17,9 @@ library(glue)
 library(wordbankr)
 library(gamlss)
 library(lmtest)
+library(lmerTest)
 library(qqplotr)
+library(doParallel)
 
 theme_set(theme_classic())
 walk(list.files("scripts", full.names = TRUE), source)
@@ -159,12 +161,6 @@ ggplot(gam_nl_moddata,
   geom_point(alpha = .5) +
   geom_smooth()
 ```
-
-### Cross-validation
-```{r}
-#TODO
-```
-
 
 ### Partial effect plot
 ```{r}
@@ -587,9 +583,13 @@ ggplot(cv_full,
   theme(legend.position = "none")
 ```
 
+Brief summary of observations: there is some variance due to the age term, and almost none due to the exposure term. Split is actually a large contributor to variance.
+
+Decision point: We base our choice for lambda on the age term on prior work (lambda = 10e4), and then do CV over the full data to determine whether the exposure term is nonlinear.
+
 # Word-level models
 ## Get data
-```{r, cache=T}
+```{r, cache=T, eval=F}
 bilingual_admin_data <- get_administration_data(include_demographic_info = TRUE,
                                                 include_language_exposure = TRUE) |> 
   filter(dataset_origin_name %in% bilingual_datasets$dataset_origin_name)
@@ -615,8 +615,13 @@ bilingual_item_data <- map(unique(bilingual_admin_data$language), \(lang) {
 bilingual_item_data_clean <- bilingual_item_data |> 
   filter(dataset_origin_name != "Armon-Lotem_Hebrew_English_Bilingual")
 
-saveRDS(bilingual_item_data_clean, "data/bilingual_item_data_clean.Rds")
+saveRDS(bilingual_item_data_clean, "data/bilingual_item_data_clean.rds")
 ```
+
+```{r}
+bilingual_item_data_clean <- readRDS("data/bilingual_item_data_clean.rds")
+```
+
 
 ## Fit model
 ```{r}
@@ -639,7 +644,7 @@ gam_item_nonlinear <- gamlss(produces ~ age *
                         control = gamlss.control(n.cyc = 100))
 ```
 
-## Quadratic exposure proportion model
+## Exposure proportion models
 ```{r}
 library(lme4)
 data_item_sc <- data_item |> 
@@ -655,5 +660,141 @@ glm_item_quad <- glmer(produces ~ age_sc * poly(exp_sc, 2) +
                          (1 | child_id) + (1 | uni_lemma) + (1 | item_id) + (1 | language),
                        data = data_item_sc,
                        family = binomial)
+
+glm_item_log <- glmer(produces ~ age_sc * log(exposure_proportion + .5) +
+                         (1 | child_id) + (1 | uni_lemma) + (1 | item_id) + (1 | language),
+                       data = data_item_sc,
+                       family = binomial)
+
+glm_item_exp <- glmer(produces ~ age_sc * exp(exp_sc) +
+                         (1 | child_id) + (1 | uni_lemma) + (1 | item_id) + (1 | language),
+                       data = data_item_sc,
+                       family = binomial)
+```
+
+Note that log causes some NaNs due to zero values. 
+
+## Cross-validation
+```{r}
+set.seed(42)
+K = 10
+
+data_item_cv <- data_item_sc |> 
+  mutate(fold = sample(1:K, length(produces), replace = TRUE),
+         log_exp_sc = scale(log(exposure_proportion + .5)),
+         across(ends_with("_sc"), c))
+
+## using the in-built gamlssCV doesn't work unfortunately… not sure why
+# cv_mods <- gamlssCV(prop_prod ~ pbm(age, lambda = 10 ^ lmb) *
+#                     pbm(exposure_proportion, lambda = 10 ^ lmb) +
+#                     re(random = ~ 1 | child_id, level = 0),
+#                   sigma.formula = ~ pbm(age, lambda = 10 ^ lmb) *  
+#                     pbm(exposure_proportion, lambda = 10 ^ lmb),
+#                   data = data_mod,
+#                   family = BE,
+#                   control = gamlss.control(n.cyc = 100),
+#                   K.fold = K)
+
+
+# cv_item_mods <- map(1:K, \(k) {
+cl <- makeCluster(5)
+registerDoParallel(cl)
+cv_item_mods <- foreach(k = 1:K,
+                        .packages = c("dplyr", "purrr", "gamlss", "lme4", "glue")) %dopar% {
+  data_train <- data_item_cv |> filter(fold != k)
+  data_val <- data_item_cv |> filter(fold == k)
+  
+  map(c("linear", "quadratic", "cubic", "logarithmic", "exponential", "sigmoidal"), \(mod_type) {
+    print(glue("k: {k}; mod_type: {mod_type}"))
+    tryCatch({
+      start_time <- Sys.time()
+      if (mod_type == "linear") {
+        mod <- glmer(produces ~ age_sc * exp_sc +
+                       (1 | child_id) + (1 | uni_lemma) + (1 | item_id) + (1 | language),
+                     data = data_train,
+                     family = binomial)
+      } else if (mod_type == "quadratic") {
+        mod <- glmer(produces ~ age_sc * poly(exp_sc, 2) +
+                       (1 | child_id) + (1 | uni_lemma) + (1 | item_id) + (1 | language),
+                     data = data_train,
+                     family = binomial,
+                     control = glmerControl(optimizer ="bobyqa", optCtrl = list(maxfun = 2e5)))
+      } else if (mod_type == "cubic") {
+        mod <- glmer(produces ~ age_sc * poly(exp_sc, 3) +
+                       (1 | child_id) + (1 | uni_lemma) + (1 | item_id) + (1 | language),
+                     data = data_train,
+                     family = binomial,
+                     control = glmerControl(optimizer ="bobyqa", optCtrl = list(maxfun = 2e5)))
+      } else if (mod_type == "logarithmic") {
+        mod <- glmer(produces ~ age_sc * log_exp_sc +
+                       (1 | child_id) + (1 | uni_lemma) + (1 | item_id) + (1 | language),
+                     data = data_train,
+                     family = binomial)
+      } else if (mod_type == "exponential") {
+        mod <- glmer(produces ~ age_sc * exp(exp_sc) +
+                       (1 | child_id) + (1 | uni_lemma) + (1 | item_id) + (1 | language),
+                     data = data_train,
+                     family = binomial)
+      } else if (mod_type == "sigmoidal") {
+        mod <- glmer(produces ~ age_sc * (1 / (1 + exp(-exp_sc))) +
+                       (1 | child_id) + (1 | uni_lemma) + (1 | item_id) + (1 | language),
+                     data = data_train,
+                     family = binomial)
+      }
+      end_time <- Sys.time()
+      print(glue("Time elapsed: {end_time - start_time}"))
+      
+      data_out <- data_val |> 
+        mutate(preds = predict(mod,
+                               newdata = data_val,
+                               type = "response"))
+      rmse <- data_out |> 
+        mutate(err = preds - produces,
+               sq_err = err ^ 2) |> 
+        summarise(rmse = sqrt(mean(sq_err, na.rm = TRUE))) |> 
+        pull(rmse)
+      
+      rm(mod)
+      
+      tibble(mod_type = mod_type,
+             preds = list(data_out),
+             rmse = rmse)
+    }, 
+    error = \(cond) {
+      tibble(mod_type = mod_type,
+             preds = NULL,
+             rmse = NA)
+    })
+  }) |> list_rbind() |> 
+    mutate(k = k)
+} |> list_rbind()
+
+saveRDS(cv_item_mods, "models/cv_item_mods.rds")
+```
+
+```{r}
+cv_item_mods <- cv_item_mods |> 
+  mutate(mod_type = factor(mod_type, 
+                           levels = c("linear", "quadratic", "cubic", 
+                                      "logarithmic", "exponential", "sigmoidal")))
+
+ggplot(cv_item_mods, 
+       aes(x = mod_type,
+           y = rmse, 
+           col = factor(mod_type))) + 
+  geom_point(alpha = .5) + 
+  stat_summary(fun = mean,
+               fun.min = function(x) mean(x) - sd(x), 
+               fun.max = function(x) mean(x) + sd(x), 
+               geom = "pointrange") +
+  theme(legend.position = "none") +
+  labs(x = "Model type",
+       y = "RMSE")
+```
+
+```{r}
+lmer(rmse ~ mod_type + (1 | k), 
+     data = cv_item_mods |> mutate(mod_type = mod_type |> relevel("cubic"))) |>
+  summary()
 ```
 
