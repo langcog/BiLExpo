@@ -66,11 +66,23 @@ Let's try copying Alvin's GAMLSS model in Stan.
 rstan_options(auto_write = TRUE) 
 options(mc.cores = parallel::detectCores())
 
-fit <- stan(file = "models/model2.stan",
+fit_linear <- stan(file = "models/model2.stan",
             data = stan_data,
             model_name = "linear",
             iter = 4000, warmup = 1000, chains = 4, seed = 123)
-saveRDS(fit, file="models/model2_fit.rds")
+saveRDS(fit_linear, file="models/model2_fit.rds")
+
+fit_quad <- stan(file = "models/model5-quadratic-exposure.stan",
+            data = stan_data,
+            model_name = "quadratic",
+            iter = 4000, warmup = 1000, chains = 4, seed = 123)
+saveRDS(fit_quad, file="models/model5_fit.rds")
+
+fit_cubic <- stan(file = "models/model6-cubic-exposure.stan",
+            data = stan_data,
+            model_name = "cubic",
+            iter = 4000, warmup = 1000, chains = 4, seed = 123)
+saveRDS(fit_cubic, file="models/model6_fit.rds")
 ```
 
 
@@ -357,17 +369,6 @@ ggplot(spline_df, aes(x = exposure_proportion)) +
 
 ### Quadratic Exposure Model
 
-```{r, eval=F}
-rstan_options(auto_write = TRUE) 
-options(mc.cores = parallel::detectCores())
-
-fit <- stan(file = "models/model5-quadratic-exposure.stan",
-            data = stan_data,
-            model_name = "quadratic",
-            iter = 4000, warmup = 1000, chains = 4, seed = 123)
-saveRDS(fit, file="models/model5_fit.rds")
-```
-
 
 ```{r}
 # Check the results
@@ -377,17 +378,6 @@ plot(fit, pars=c("beta_age", "beta_exposure", "beta_exposure2", "beta_age_exposu
 
 
 ### Cubic Exposure Model
-
-```{r, eval=F}
-rstan_options(auto_write = TRUE) 
-options(mc.cores = parallel::detectCores())
-
-fit <- stan(file = "models/model6-cubic-exposure.stan",
-            data = stan_data,
-            model_name = "cubic",
-            iter = 4000, warmup = 1000, chains = 4, seed = 123)
-saveRDS(fit, file="models/model6_fit.rds")
-```
 
 
 ```{r}
