@@ -60,6 +60,8 @@ stan_data <- list(
 
 Let's try copying Alvin's GAMLSS model in Stan.
 
+### Linear Exposure Model
+
 ```{r, eval=F}
 rstan_options(auto_write = TRUE) 
 options(mc.cores = parallel::detectCores())
@@ -70,7 +72,6 @@ fit <- stan(file = "models/model2.stan",
             iter = 4000, warmup = 1000, chains = 4, seed = 123)
 saveRDS(fit, file="models/model2_fit.rds")
 ```
-
 
 
 ```{r}
@@ -351,5 +352,26 @@ ggplot(spline_df, aes(x = exposure_proportion)) +
   geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, fill = "blue") +
   labs(x = "Exposure Proportion", y = "Predicted Spline Effect", title = "Fitted Spline with 95% Credible Interval") +
   theme_minimal()
+```
+
+
+### Quadratic Exposure Model
+
+```{r, eval=F}
+rstan_options(auto_write = TRUE) 
+options(mc.cores = parallel::detectCores())
+
+fit <- stan(file = "models/model5-quadratic-exposure.stan",
+            data = stan_data,
+            model_name = "quadratic",
+            iter = 4000, warmup = 1000, chains = 4, seed = 123)
+saveRDS(fit, file="models/model5_fit.rds")
+```
+
+
+```{r}
+# Check the results
+fit <- readRDS("models/model5_fit.rds")
+plot(fit, pars=c("beta_age", "beta_exposure", "beta_exposure2", "beta_age_exposure")) # alpha
 ```
 
