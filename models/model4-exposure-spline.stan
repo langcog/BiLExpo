@@ -41,7 +41,7 @@ transformed parameters {
     eta[n] = alpha 
              + exposure_spline[n] * beta_exposure_spline // nonlinear effect of exposure
              + age[n] * beta_age
-             + beta_age_exposure * (age[n] * beta_exposure_spline) * exposure[n] 
+             + beta_age_exposure * (exposure_spline[n] * beta_exposure_spline) * age[n] 
              + u_child[child[n]]
              + u_word[word[n]]
              + u_item[item[n]]

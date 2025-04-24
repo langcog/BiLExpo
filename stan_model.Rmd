@@ -148,17 +148,17 @@ saveRDS(fit, file="models/model3-age-spline_fit.rds")
 ```{r}
 # Check the results
 fit <- readRDS("models/model3-age-spline_fit.rds")
+#plot(fit)
 ```
-
-## Posterior Predictive Check
-
 
 ```{r}
 plot(fit, pars=c("beta_age_spline[1]", "beta_age_spline[2]", 
                  "beta_age_spline[3]", "beta_age_spline[4]",
                  "beta_exposure", "beta_age_exposure"))
-plot(fit)
 ```
+
+## Posterior Predictive Check
+
 
 ```{r}
 posterior_samples <- extract(fit)
@@ -172,15 +172,6 @@ age_spline_basis <- ns(age_range, df = 4)  # 4 degrees of freedom used in your S
 # Calculate the predicted spline for the mean of the posterior samples
 mean_beta_age_spline <- colMeans(beta_age_spline)
 
-predicted_spline <- age_spline_basis %*% mean_beta_age_spline  # Predicted values
-
-ggplot(data = data.frame(age_range, predicted_spline), aes(x = age_range, y = predicted_spline)) +
-  geom_line(color = "blue", size = 1) +
-  labs(x = "Age", y = "Predicted Spline Effect", title = "Fitted Spline for Age") +
-  theme_minimal()
-```
-
-```{r}
 # Generate predicted splines for each posterior sample
 predicted_splines <- age_spline_basis %*% t(beta_age_spline)
 
@@ -323,16 +314,42 @@ saveRDS(fit, file="models/model4-exposure-spline_fit.rds")
 ```{r}
 # Check the results
 fit <- readRDS("models/model4-exposure-spline_fit.rds")
-plot(fit)
+#plot(fit)
+plot(fit, pars=c("beta_exposure_spline[1]", "beta_exposure_spline[2]", 
+                 "beta_exposure_spline[3]", "beta_exposure_spline[4]",
+                 "beta_age", "beta_age_exposure"))
 ```
 
 ## Posterior Predictive Check
 
 
 ```{r}
-plot(fit, pars=c("beta_exposure_spline[1]", "beta_exposure_spline[2]", 
-                 "beta_exposure_spline[3]", "beta_exposure_spline[4]",
-                 "beta_exposure", "beta_age_exposure"))
-plot(fit)
+posterior_samples <- extract(fit)
+beta_exposure_spline <- posterior_samples$beta_exposure_spline
+
+exposure_proportion <- seq(min(data_item$exposure_proportion), 
+                 max(data_item$exposure_proportion), length.out = 100)
+
+# Create the spline basis for the age range (using the same settings as in your STAN model)
+exp_spline_basis <- ns(exposure_proportion, df = 4)  # 4 degrees of freedom 
+
+# Calculate the predicted spline for the mean of the posterior samples
+mean_beta_exp_spline <- colMeans(beta_exposure_spline)
+
+# Generate predicted splines for each posterior sample
+predicted_splines <- exp_spline_basis %*% t(beta_exposure_spline)
+
+# Compute the 2.5th and 97.5th percentiles for the uncertainty intervals
+ci_lower <- apply(predicted_splines, 1, quantile, probs = 0.025)
+ci_upper <- apply(predicted_splines, 1, quantile, probs = 0.975)
+
+spline_df <- data.frame(exposure_proportion, predicted_splines, ci_lower, ci_upper)
+
+# Plot with credible intervals
+ggplot(spline_df, aes(x = exposure_proportion)) +
+  geom_line(aes(y = predicted_spline), color = "blue", size = 1) +
+  geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, fill = "blue") +
+  labs(x = "Exposure Proportion", y = "Predicted Spline Effect", title = "Fitted Spline with 95% Credible Interval") +
+  theme_minimal()
 ```
 
