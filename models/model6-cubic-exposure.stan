@@ -7,10 +7,10 @@ data {
   int<lower=0,upper=1> y[N];   // binary outcome: word produced or not
   vector[N] age;               // age of the child
   vector[N] exposure;          // exposure proportion
-  int<lower=1,upper=I> child[N]; // child_id
-  int<lower=1,upper=W> word[N];  // word_id
-  int<lower=1,upper=J> item[N];  // item_id
-  int<lower=1,upper=L> lang[N];  // language_id
+  int<lower=1,upper=I> child[N];
+  int<lower=1,upper=W> word[N];
+  int<lower=1,upper=J> item[N];
+  int<lower=1,upper=L> lang[N];
 }
 
 parameters {
@@ -18,7 +18,8 @@ parameters {
   real alpha;
   real beta_age;
   real beta_exposure;
-  real beta_exposure2;    
+  real beta_exposure2;
+  real beta_exposure3;  
   real beta_age_exposure;
 
   // Random effects
@@ -40,7 +41,8 @@ transformed parameters {
     eta[n] = alpha
            + beta_age * age[n]
            + beta_exposure * exposure[n]
-           + beta_exposure2 * square(exposure[n]) 
+           + beta_exposure2 * square(exposure[n])
+           + beta_exposure3 * exposure[n] * square(exposure[n]) 
            + beta_age_exposure * age[n] * exposure[n]
            + u_child[child[n]]
            + u_word[word[n]]
@@ -54,7 +56,8 @@ model {
   alpha ~ normal(0, 5);
   beta_age ~ normal(0, 1);
   beta_exposure ~ normal(0, 1);
-  beta_exposure2 ~ normal(0, 1);      // <- NEW
+  beta_exposure2 ~ normal(0, 1);
+  beta_exposure3 ~ normal(0, 1);  
   beta_age_exposure ~ normal(0, 1);
 
   u_child ~ normal(0, sigma_child);

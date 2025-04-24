@@ -76,15 +76,15 @@ saveRDS(fit, file="models/model2_fit.rds")
 
 ```{r}
 # Check the results
-fit <- readRDS("models/model2_fit.rds")
-plot(fit, pars=c("beta_age", "beta_exposure", "beta_age_exposure")) # alpha
+fit_linear <- readRDS("models/model2_fit.rds")
+plot(fit_linear, pars=c("beta_age", "beta_exposure", "beta_age_exposure")) # alpha
 ```
 
 ## Posterior Predictive Check
 
 ```{r, eval=F}
 # Extract generated quantities
-y_rep <- extract(fit)$y_rep
+y_rep <- extract(fit_linear)$y_rep
 
 # For example, compute the posterior predictive mean for each observation
 y_rep_mean <- apply(y_rep, 2, mean)
@@ -371,7 +371,149 @@ saveRDS(fit, file="models/model5_fit.rds")
 
 ```{r}
 # Check the results
-fit <- readRDS("models/model5_fit.rds")
+fit_quad <- readRDS("models/model5_fit.rds")
 plot(fit, pars=c("beta_age", "beta_exposure", "beta_exposure2", "beta_age_exposure")) # alpha
+```
+
+
+### Cubic Exposure Model
+
+```{r, eval=F}
+rstan_options(auto_write = TRUE) 
+options(mc.cores = parallel::detectCores())
+
+fit <- stan(file = "models/model6-cubic-exposure.stan",
+            data = stan_data,
+            model_name = "cubic",
+            iter = 4000, warmup = 1000, chains = 4, seed = 123)
+saveRDS(fit, file="models/model6_fit.rds")
+```
+
+
+```{r}
+# Check the results
+fit_cubic <- readRDS("models/model6_fit.rds")
+plot(fit_cubic, pars=c("beta_age", "beta_exposure", "beta_exposure2", "beta_exposure3", 
+                 "beta_age_exposure")) # alpha
+```
+
+
+## Model Comparison
+
+Lower LOOIC is better. If ΔLOOIC > ~4 and SE is small, that’s strong evidence the lower model is better.
+If differences are small or uncertain (SE > ΔLOOIC), look at even simpler models or posterior predictive checks.
+
+```{r}
+library(loo)
+
+# Extract log_lik matrices
+log_lik_linear <- extract_log_lik(fit_linear, merge_chains = FALSE)
+log_lik_quad   <- extract_log_lik(fit_quad, merge_chains = FALSE)
+log_lik_cubic  <- extract_log_lik(fit_cubic, merge_chains = FALSE)
+
+# Compute LOO for each
+loo_linear <- loo(log_lik_linear)
+loo_quad   <- loo(log_lik_quad)
+loo_cubic  <- loo(log_lik_cubic)
+
+# Compare them
+compare_models(loo_linear, loo_quad, loo_cubic)
+```
+
+
+## Plot Exposure Effects
+
+
+```{r}
+# Exposure sequence
+exposure_seq <- seq(0, 1, length.out = 100)
+
+# Set age to mean or fixed value
+mean_age <- mean(stan_data$age)
+
+# Create a new data frame for prediction
+new_data <- data.frame(
+  age = rep(mean_age, 100),
+  exposure = exposure_seq
+)
+```
+
+
+```{r}
+predict_exposure_effect <- function(fit, new_data, degree = c("linear", "quadratic", "cubic")) {
+  posterior <- rstan::extract(fit)
+  
+  alpha <- posterior$alpha
+  beta_age <- posterior$beta_age
+  beta_exposure <- posterior$beta_exposure
+  beta_age_exposure <- posterior$beta_age_exposure
+  
+  # Add higher-order terms as needed
+  if ("quadratic" %in% degree) {
+    beta_exposure2 <- posterior$beta_exposure2
+    eta <- outer(1:nrow(new_data), 1:length(alpha), 
+                 Vectorize(function(i, s) alpha[s] +
+                                             beta_age[s] * new_data$age[i] +
+                                             beta_exposure[s] * new_data$exposure[i] +
+                                             beta_exposure2[s] * new_data$exposure[i]^2 +
+                                             beta_age_exposure[s] * new_data$age[i] * new_data$exposure[i]))
+  } else if ("cubic" %in% degree) {
+    beta_exposure2 <- posterior$beta_exposure2
+    beta_exposure3 <- posterior$beta_exposure3
+    eta <- outer(1:nrow(new_data), 1:length(alpha), 
+                 Vectorize(function(i, s) alpha[s] +
+                                             beta_age[s] * new_data$age[i] +
+                                             beta_exposure[s] * new_data$exposure[i] +
+                                             beta_exposure2[s] * new_data$exposure[i]^2 +
+                                             beta_exposure3[s] * new_data$exposure[i]^3 +
+                                             beta_age_exposure[s] * new_data$age[i] * new_data$exposure[i]))
+  } else {
+    eta <- outer(1:nrow(new_data), 1:length(alpha), 
+                 Vectorize(function(i, s) alpha[s] +
+                                             beta_age[s] * new_data$age[i] +
+                                             beta_exposure[s] * new_data$exposure[i] +
+                                             beta_age_exposure[s] * new_data$age[i] * new_data$exposure[i]))
+  }
+  
+  # Convert to predicted probabilities
+  p <- plogis(eta)
+  
+  # Mean and 95% CI across draws
+  pred_mean <- apply(p, 1, mean)
+  pred_lower <- apply(p, 1, quantile, probs = 0.025)
+  pred_upper <- apply(p, 1, quantile, probs = 0.975)
+  
+  data.frame(
+    exposure = new_data$exposure,
+    mean = pred_mean,
+    lower = pred_lower,
+    upper = pred_upper,
+    model = degree
+  )
+}
+```
+
+
+```{r}
+df_linear <- predict_exposure_effect(fit_linear, new_data, "linear")
+df_quad   <- predict_exposure_effect(fit_quad, new_data, "quadratic")
+df_cubic  <- predict_exposure_effect(fit_cubic, new_data, "cubic")
+
+df_all <- rbind(df_linear, df_quad, df_cubic)
+```
+
+
+```{r}
+ggplot(df_all, aes(x = exposure, y = mean, color = model, fill = model)) +
+  geom_line(size = 1) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, color = NA) +
+  labs(
+    title = "Predicted Word Production Probability by Exposure",
+    x = "Exposure Proportion",
+    y = "Predicted Probability",
+    color = "Model",
+    fill = "Model"
+  ) +
+  theme_minimal(base_size = 14)
 ```
 

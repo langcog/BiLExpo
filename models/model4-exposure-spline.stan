@@ -77,4 +77,9 @@ generated quantities {
   for (n in 1:N) {
     y_rep[n] = bernoulli_logit_rng(eta[n]);
   }
+  
+  vector[N] log_lik;
+  for (n in 1:N) {
+    log_lik[n] = bernoulli_logit_lpmf(y[n] | eta[n]);
+  }
 }
