@@ -69,20 +69,37 @@ options(mc.cores = parallel::detectCores())
 fit_linear <- stan(file = "models/model2.stan",
             data = stan_data,
             model_name = "linear",
-            iter = 4000, warmup = 1000, chains = 4, seed = 123)
+            control = list(max_treedepth=12),
+            iter = 4000, warmup = 1000, chains = 4, seed = 123)4
 saveRDS(fit_linear, file="models/model2_fit.rds")
+rm(fit_linear)
+```
+
+
+```{r, eval=F}
+rstan_options(auto_write = TRUE) 
+options(mc.cores = parallel::detectCores())
 
 fit_quad <- stan(file = "models/model5-quadratic-exposure.stan",
             data = stan_data,
             model_name = "quadratic",
+            control = list(max_treedepth=12),
             iter = 4000, warmup = 1000, chains = 4, seed = 123)
 saveRDS(fit_quad, file="models/model5_fit.rds")
+rm(fit_quad)
+```
+
+```{r, eval=F}
+rstan_options(auto_write = TRUE) 
+options(mc.cores = parallel::detectCores())
 
 fit_cubic <- stan(file = "models/model6-cubic-exposure.stan",
             data = stan_data,
             model_name = "cubic",
+            control = list(max_treedepth=12),
             iter = 4000, warmup = 1000, chains = 4, seed = 123)
 saveRDS(fit_cubic, file="models/model6_fit.rds")
+rm(fit_cubic)
 ```
 
 
