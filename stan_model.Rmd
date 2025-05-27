@@ -31,56 +31,7 @@ bilingual_item_data_clean <- readRDS("data/bilingual_item_data_clean.Rds")
 
 
 ```{r}
-prepare_stan_data <- function(data_item, desired_lexical_category = NULL, 
-                              n_items = NULL, seed = 123, 
-                              original_dataset_name = NULL) {
-  set.seed(seed)
-
-  # Optionally filter to dataset
-  if (!is.null(dataset_name)) {
-    data_item <- data_item |>
-      filter(dataset_origin_name == original_dataset_name)
-  }
-
-  # Optionally filter by lexical category
-  if (!is.null(desired_lexical_category)) {
-    data_item <- data_item |>
-      filter(lexical_category %in% desired_lexical_category)
-  }
-
-  # Optionally sample a subset of items
-  if (!is.null(n_items)) {
-    sampled_items <- sample(unique(data_item$item_id), n_items, replace = F)
-    data_item <- data_item |>
-      filter(item_id %in% sampled_items)
-  }
-
-  # Keep only needed columns and remove missing values
-  data_item <- data_item |>
-    select(produces, age, exposure_proportion, child_id, uni_lemma, item_id, language) |>
-    na.omit()
-
-  # Prepare data list for Stan
-  stan_data <- list(
-    N = nrow(data_item),
-    I = length(unique(data_item$child_id)),
-    W = length(unique(data_item$uni_lemma)),
-    J = length(unique(data_item$item_id)),
-    L = length(unique(data_item$language)),
-    y = data_item$produces,
-    age = data_item$age,
-    exposure = data_item$exposure_proportion,
-    child = as.integer(factor(data_item$child_id)),
-    word = as.integer(factor(data_item$uni_lemma)),
-    item = as.integer(factor(data_item$item_id)),
-    lang = as.integer(factor(data_item$language))
-  )
-
-  return(stan_data)
-}
-
-
-stan_data <- prepare_stan_data(bilingual_item_data_clean, n_items=300, 
+stan_data <- prepare_stan_data(bilingual_item_data_clean, #n_items=300, # can do 300 with 64gb RAM
                                original_dataset_name = "Marchman Dallas Bilingual")
 ```
 
@@ -104,7 +55,10 @@ rm(fit_linear)
 
 ...by lexical category:
 
-```{r}
+```{r, eval=F}
+rstan_options(auto_write = TRUE) 
+options(mc.cores = parallel::detectCores())
+
 fit_stan_by_lexical_category(
   data = bilingual_item_data_clean,
   model_file = "models/model2.stan",
@@ -113,7 +67,6 @@ fit_stan_by_lexical_category(
   original_dataset_name = "Marchman Dallas Bilingual",
   seed = 123
 )
-
 ```
 
 ```{r, eval=F}
