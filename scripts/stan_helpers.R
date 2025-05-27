@@ -1,3 +1,52 @@
+fit_stan_by_lexical_category <- function(data, model_file, model_name = NULL,
+                                         output_dir = "models",
+                                         categories = NULL, n_items = NULL,
+                                         original_dataset_name = NULL,
+                                         seed = 123, iter = 4000,
+                                         warmup = 1000, chains = 4,
+                                         control = list(max_treedepth = 15)) {
+  if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+  
+  # Get unique lexical categories if not supplied
+  if (is.null(categories)) {
+    categories <- unique(data$lexical_category)
+  }
+  
+  for (cat in categories) {
+    message("Fitting model for lexical category: ", cat)
+    
+    # Prepare Stan data
+    stan_data <- prepare_stan_data(
+      data = data,
+      desired_lexical_category = cat,
+      n_items = n_items,
+      original_dataset_name = original_dataset_name,
+      seed = seed
+    )
+    
+    # Fit Stan model
+    fit <- stan(
+      file = model_file,
+      data = stan_data,
+      model_name = if (is.null(model_name)) paste0("model_", cat) else model_name,
+      control = control,
+      iter = iter,
+      warmup = warmup,
+      chains = chains,
+      seed = seed
+    )
+    
+    # Save model
+    out_file <- file.path(output_dir, paste0(tools::file_path_sans_ext(basename(model_file)), "_fit_", cat, ".rds"))
+    saveRDS(fit, file = out_file)
+    message("Saved model fit to: ", out_file)
+    
+    # Clean up
+    rm(fit)
+    gc()
+  }
+}
+
 
 plot_children <- function(posterior_samples) {
   u_child <- posterior_samples$u_child

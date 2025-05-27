@@ -23,38 +23,65 @@ source("scripts/stan_helpers.R")
 
 ```{r load-and-prep-data, include=F}
 bilingual_item_data_clean <- readRDS("data/bilingual_item_data_clean.Rds")
-data_item <- bilingual_item_data_clean |> 
-  filter(dataset_origin_name == "Marchman Dallas Bilingual")
 
-# ToDo: subset to different lexical categories, and see if different lex cats have different functional forms
+# below, see if different lex cats have different functional forms
+# function_words          nouns          other     predicates 
+#         37434         114504          36700          60922 
+```
 
-pids <- unique(data_item$child_id)
-# 10 kids x 680 words x 2 langs = 13600 (but somehow 15440 data points?) - 43 minutes
-itids <- unique(data_item$item_id)
-# 144 kids x 200 words x 2 langs = 57600 (but somehow 72851?) - 252 minutes
 
-# full dataset (247913) should take: 3.4*252 / 60 = 14.3 hrs
-data_item <- data_item |> 
-  #filter(is.element(child_id, sample(pids, 10))) |>
-  filter(is.element(item_id, sample(itids, 300))) |>
-  select(produces, age, exposure_proportion, child_id, uni_lemma, item_id, language) |> 
-  na.omit()
+```{r}
+prepare_stan_data <- function(data_item, desired_lexical_category = NULL, 
+                              n_items = NULL, seed = 123, 
+                              original_dataset_name = NULL) {
+  set.seed(seed)
 
-# Prepare data for Stan model
-stan_data <- list(
-  N = nrow(data_item),
-  I = length(unique(data_item$child_id)),
-  W = length(unique(data_item$uni_lemma)),
-  J = length(unique(data_item$item_id)),
-  L = length(unique(data_item$language)),
-  y = data_item$produces,
-  age = data_item$age,
-  exposure = data_item$exposure_proportion,
-  child = as.integer(factor(data_item$child_id)),
-  word = as.integer(factor(data_item$uni_lemma)),
-  item = as.integer(factor(data_item$item_id)),
-  lang = as.integer(factor(data_item$language))
-)
+  # Optionally filter to dataset
+  if (!is.null(dataset_name)) {
+    data_item <- data_item |>
+      filter(dataset_origin_name == original_dataset_name)
+  }
+
+  # Optionally filter by lexical category
+  if (!is.null(desired_lexical_category)) {
+    data_item <- data_item |>
+      filter(lexical_category %in% desired_lexical_category)
+  }
+
+  # Optionally sample a subset of items
+  if (!is.null(n_items)) {
+    sampled_items <- sample(unique(data_item$item_id), n_items, replace = F)
+    data_item <- data_item |>
+      filter(item_id %in% sampled_items)
+  }
+
+  # Keep only needed columns and remove missing values
+  data_item <- data_item |>
+    select(produces, age, exposure_proportion, child_id, uni_lemma, item_id, language) |>
+    na.omit()
+
+  # Prepare data list for Stan
+  stan_data <- list(
+    N = nrow(data_item),
+    I = length(unique(data_item$child_id)),
+    W = length(unique(data_item$uni_lemma)),
+    J = length(unique(data_item$item_id)),
+    L = length(unique(data_item$language)),
+    y = data_item$produces,
+    age = data_item$age,
+    exposure = data_item$exposure_proportion,
+    child = as.integer(factor(data_item$child_id)),
+    word = as.integer(factor(data_item$uni_lemma)),
+    item = as.integer(factor(data_item$item_id)),
+    lang = as.integer(factor(data_item$language))
+  )
+
+  return(stan_data)
+}
+
+
+stan_data <- prepare_stan_data(bilingual_item_data_clean, n_items=300, 
+                               original_dataset_name = "Marchman Dallas Bilingual")
 ```
 
 
@@ -69,12 +96,25 @@ options(mc.cores = parallel::detectCores())
 fit_linear <- stan(file = "models/model2.stan",
             data = stan_data,
             model_name = "linear",
-            control = list(max_treedepth=12),
-            iter = 4000, warmup = 1000, chains = 4, seed = 123)4
+            control = list(max_treedepth=15),
+            iter = 4000, warmup = 1000, chains = 4, seed = 123)
 saveRDS(fit_linear, file="models/model2_fit.rds")
 rm(fit_linear)
 ```
 
+...by lexical category:
+
+```{r}
+fit_stan_by_lexical_category(
+  data = bilingual_item_data_clean,
+  model_file = "models/model2.stan",
+  model_name = "linear",
+  output_dir = "models",
+  original_dataset_name = "Marchman Dallas Bilingual",
+  seed = 123
+)
+
+```
 
 ```{r, eval=F}
 rstan_options(auto_write = TRUE) 
@@ -413,18 +453,22 @@ If differences are small or uncertain (SE > ΔLOOIC), look at even simpler model
 ```{r}
 library(loo)
 
+fit_linear <- readRDS("models/model2_fit.rds")
+fit_quad <- readRDS("models/model5_fit.rds")
+fit_cubic <- readRDS("models/model6_fit.rds")
+
 # Extract log_lik matrices
 log_lik_linear <- extract_log_lik(fit_linear, merge_chains = FALSE)
 log_lik_quad   <- extract_log_lik(fit_quad, merge_chains = FALSE)
 log_lik_cubic  <- extract_log_lik(fit_cubic, merge_chains = FALSE)
 
-# Compute LOO for each
+# Compute LOO for eachWarning: Can't fit generalized Pareto distribution because all tail values are the same.
 loo_linear <- loo(log_lik_linear)
 loo_quad   <- loo(log_lik_quad)
 loo_cubic  <- loo(log_lik_cubic)
 
 # Compare them
-compare_models(loo_linear, loo_quad, loo_cubic)
+loo_compare(loo_linear, loo_quad, loo_cubic)
 ```
 
 
