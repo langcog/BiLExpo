@@ -69,6 +69,57 @@ fit_stan_by_lexical_category(
 )
 ```
 
+```{r}
+fit <- readRDS("models/model2_fit_nouns.rds")
+m2_nouns <- summarize_exposure_by_age(fit, plot=F)
+rm(fit)
+```
+
+```{r}
+fit <- readRDS("models/model2_fit_function_words.rds")
+m2_function_words <- summarize_exposure_by_age(fit, plot=F)
+rm(fit)
+```
+
+```{r}
+fit <- readRDS("models/model2_fit_predicates.rds")
+m2_predicates <- summarize_exposure_by_age(fit, plot=F)
+rm(fit)
+```
+
+```{r}
+fit <- readRDS("models/model2_fit_other.rds")
+m2_other <- summarize_exposure_by_age(fit, plot=F)
+rm(fit)
+```
+
+```{r}
+m2_lex_cat <- m2_nouns |> mutate(lex_cat = "nouns") |>
+  bind_rows(m2_function_words |> mutate(lex_cat = "function words")) |>
+  bind_rows(m2_predicates |> mutate(lex_cat = "predicates")) |>
+  bind_rows(m2_other |> mutate(lex_cat = "other"))
+```
+
+```{r}
+m2_lex_cat |> ggplot(aes(x=age, y=mean, group=lex_cat)) +
+  geom_line(linewidth = 1.2, aes(color=lex_cat)) +
+      geom_ribbon(aes(ymin = lower, ymax = upper, fill=lex_cat), alpha = 0.2) +
+      xlab("Age (years)") + ylab("Exposure Effect (posterior mean ± 95% CI)") +
+      theme_minimal(base_size = 14)
+```
+
+
+```{r}
+results <- summarize_and_plot_by_lexcat(
+  model_base = "model2_fit",
+  output_dir = "models",
+  exposure_param = "beta_exposure",
+  item_param = "u_item"
+)
+```
+
+
+
 ```{r, eval=F}
 rstan_options(auto_write = TRUE) 
 options(mc.cores = parallel::detectCores())

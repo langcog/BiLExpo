@@ -133,3 +133,129 @@ plot_items <- function(posterior_samples) {
     labs(x = "Item ID", y = "Item Difficulty", title = "Random Effects for Items") +
     theme_minimal() + coord_flip()
 }
+
+summarize_exposure_by_age <- function(fit, exposure_param = "beta_exposure", 
+                                      age_param = "beta_age",
+                                      interaction_param = "beta_age_exposure",
+                                      age_range = seq(0.5, 3.0, by = 0.1),
+                                      plot = TRUE) {
+  # Extract posterior samples
+  beta_exp <- rstan::extract(fit, pars = exposure_param)[[1]]
+  beta_age <- rstan::extract(fit, pars = age_param)[[1]]
+  beta_exp_age <- rstan::extract(fit, pars = interaction_param)[[1]]
+  
+  if (is.null(beta_exp) || is.null(beta_age) || is.null(beta_exp_age)) {
+    stop("One or more specified parameters not found in the model.")
+  }
+  
+  n_draws <- nrow(beta_exp)
+  age_effects <- lapply(age_range, function(a) {
+    exposure_effect <- beta_exp + a * beta_exp_age
+    tibble(
+      age = a,
+      mean = mean(exposure_effect),
+      lower = quantile(exposure_effect, 0.025),
+      upper = quantile(exposure_effect, 0.975)
+    )
+  }) |> bind_rows()
+  
+  if (plot) {
+    p <- ggplot(age_effects, aes(x = age, y = mean)) +
+      geom_line(linewidth = 1.2, color = "#3366CC") +
+      geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, fill = "#3366CC") +
+      labs(
+        title = "Estimated Exposure Effect as a Function of Age",
+        x = "Age (years)",
+        y = "Exposure Effect (posterior mean ± 95% CI)"
+      ) +
+      theme_minimal(base_size = 14)
+    print(p)
+  }
+  
+  return(age_effects)
+}
+
+
+# FixMe
+summarize_and_plot_by_lexcat <- function(model_base = "model2_fit",
+                                         output_dir = "models",
+                                         exposure_param = "beta_exposure", 
+                                         item_param = "u_item", 
+                                         plot = TRUE) {
+  # List all matching .rds files
+  files <- list.files(output_dir, pattern = paste0("^", model_base, "_fit_.*\\.rds$"), full.names = TRUE)
+  
+  # Extract category names from filenames
+  categories <- str_extract(files, "(?<=_fit_)[^/]+(?=\\.rds$)")
+  
+  extract_summary <- function(fit, param, level = NULL) {
+    samples <- rstan::extract(fit, pars = param)[[1]]
+    if (!is.null(level)) {
+      # Multi-dimensional parameter (e.g., vector)
+      df <- as.data.frame(samples)
+      names(df) <- paste0(param, "[", seq_len(ncol(df)), "]")
+      df_long <- df |>
+        pivot_longer(everything(), names_to = "param", values_to = "value") |>
+        group_by(param) |>
+        summarize(mean = mean(value),
+                  lower = quantile(value, 0.025),
+                  upper = quantile(value, 0.975),
+                  .groups = "drop") |>
+        mutate(level = seq_along(mean))
+    } else {
+      df_long <- tibble(
+        param = param,
+        mean = mean(samples),
+        lower = quantile(samples, 0.025),
+        upper = quantile(samples, 0.975)
+      )
+    }
+    return(df_long)
+  }
+  
+  all_exposure <- list()
+  all_items <- list()
+  
+  for (i in seq_along(files)) {
+    fit <- readRDS(files[i])
+    lexcat <- categories[i]
+    
+    exposure_df <- extract_summary(fit, exposure_param)
+    exposure_df$lexical_category <- lexcat
+    
+    item_df <- extract_summary(fit, item_param, level = "item")
+    item_df$lexical_category <- lexcat
+    
+    all_exposure[[i]] <- exposure_df
+    all_items[[i]] <- item_df
+    
+    rm(fit)
+    gc()
+  }
+  
+  exposure_summary <- bind_rows(all_exposure)
+  item_summary <- bind_rows(all_items)
+  
+  if (plot) {
+    p1 <- ggplot(exposure_summary, aes(x = lexical_category, y = mean)) +
+      geom_point(size = 3) +
+      geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2) +
+      labs(title = "Exposure Effect by Lexical Category",
+           y = "Posterior Mean ± 95% CI", x = "Lexical Category") +
+      theme_minimal()
+    
+    p2 <- ggplot(item_summary, aes(x = lexical_category, y = mean)) +
+      stat_summary(fun.data = mean_cl_normal, geom = "pointrange") +
+      labs(title = "Average Item Difficulty by Lexical Category",
+           y = "Item Difficulty (mean ± CI)", x = "Lexical Category") +
+      theme_minimal()
+    
+    print(p1)
+    print(p2)
+  }
+  
+  return(list(
+    exposure_summary = exposure_summary,
+    item_summary = item_summary
+  ))
+}
