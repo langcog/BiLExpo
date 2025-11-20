@@ -27,11 +27,24 @@ bilingual_item_data_clean <- readRDS("data/bilingual_item_data_clean.Rds")
 # below, see if different lex cats have different functional forms
 # function_words          nouns          other     predicates 
 #         37434         114504          36700          60922 
+
+# try fitting only Swadesh-CDI items (for compute practicality)
+swad_orig <- read_csv("data/Swadesh_items_from_4_methods.csv") |> 
+  filter(method == "Syntactic") |> pull(uni_lemma)
+# should also add optional items: 
+swad_extension <- c("try", "in", "out", "under", "a lot", "all", "many", 
+                    "not", "glue (object)", "toy (object)")
+swad_items <- c(swad_orig, swad_extension)
+
+bilingual_swad_item_data <- bilingual_item_data_clean |> filter(uni_lemma %in% swad_items)
 ```
 
 
 ```{r}
-stan_data <- prepare_stan_data(bilingual_item_data_clean, #n_items=300, # can do 300 with 64gb RAM
+#stan_data <- prepare_stan_data(bilingual_item_data_clean, #n_items=300, # can do 300 with 64gb RAM
+#                               original_dataset_name = "Marchman Dallas Bilingual")
+
+stan_data <- prepare_stan_data(bilingual_swad_item_data, 
                                original_dataset_name = "Marchman Dallas Bilingual")
 ```
 
@@ -49,8 +62,34 @@ fit_linear <- stan(file = "models/model2.stan",
             model_name = "linear",
             control = list(max_treedepth=15),
             iter = 4000, warmup = 1000, chains = 4, seed = 123)
-saveRDS(fit_linear, file="models/model2_fit.rds")
+saveRDS(fit_linear, file="models/model2_SCDI_fit.rds")
 rm(fit_linear)
+```
+
+```{r, eval=F}
+rstan_options(auto_write = TRUE) 
+options(mc.cores = parallel::detectCores())
+
+fit_quad <- stan(file = "models/model5-quadratic-exposure.stan",
+            data = stan_data,
+            model_name = "quadratic",
+            control = list(max_treedepth=12),
+            iter = 4000, warmup = 1000, chains = 4, seed = 123)
+saveRDS(fit_quad, file="models/model5_SCDI_fit.rds")
+rm(fit_quad)
+```
+
+```{r, eval=F}
+rstan_options(auto_write = TRUE) 
+options(mc.cores = parallel::detectCores())
+
+fit_cubic <- stan(file = "models/model6-cubic-exposure.stan",
+            data = stan_data,
+            model_name = "cubic",
+            control = list(max_treedepth=12),
+            iter = 4000, warmup = 1000, chains = 4, seed = 123)
+saveRDS(fit_cubic, file="models/model6_SCDI_fit.rds")
+rm(fit_cubic)
 ```
 
 ...by lexical category:
@@ -120,31 +159,7 @@ results <- summarize_and_plot_by_lexcat(
 
 
 
-```{r, eval=F}
-rstan_options(auto_write = TRUE) 
-options(mc.cores = parallel::detectCores())
 
-fit_quad <- stan(file = "models/model5-quadratic-exposure.stan",
-            data = stan_data,
-            model_name = "quadratic",
-            control = list(max_treedepth=12),
-            iter = 4000, warmup = 1000, chains = 4, seed = 123)
-saveRDS(fit_quad, file="models/model5_fit.rds")
-rm(fit_quad)
-```
-
-```{r, eval=F}
-rstan_options(auto_write = TRUE) 
-options(mc.cores = parallel::detectCores())
-
-fit_cubic <- stan(file = "models/model6-cubic-exposure.stan",
-            data = stan_data,
-            model_name = "cubic",
-            control = list(max_treedepth=12),
-            iter = 4000, warmup = 1000, chains = 4, seed = 123)
-saveRDS(fit_cubic, file="models/model6_fit.rds")
-rm(fit_cubic)
-```
 
 
 ```{r}
