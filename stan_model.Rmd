@@ -77,11 +77,7 @@ fit_quad <- stan(file = "models/model5-quadratic-exposure.stan",
             iter = 4000, warmup = 1000, chains = 4, seed = 123)
 saveRDS(fit_quad, file="models/model5_SCDI_fit.rds")
 rm(fit_quad)
-```
 
-```{r, eval=F}
-rstan_options(auto_write = TRUE) 
-options(mc.cores = parallel::detectCores())
 
 fit_cubic <- stan(file = "models/model6-cubic-exposure.stan",
             data = stan_data,
@@ -91,6 +87,9 @@ fit_cubic <- stan(file = "models/model6-cubic-exposure.stan",
 saveRDS(fit_cubic, file="models/model6_SCDI_fit.rds")
 rm(fit_cubic)
 ```
+
+
+
 
 ...by lexical category:
 
@@ -229,7 +228,7 @@ fit <- stan(file = "models/model3-age-spline.stan",
             data = stan_data,
             model_name = "age-spline",
             control = list(max_treedepth=12),
-            iter = 2500, warmup = 1000, chains = 4, seed = 123,
+            iter = 4000, warmup = 1000, chains = 4, seed = 123,
             thin = 2)
 saveRDS(fit, file="models/model3-age-spline_fit.rds")
 ```
@@ -364,6 +363,10 @@ ggplot(df_ppc, aes(x = predicted, fill = factor(observed))) +
 ```{r}
 library(splines)
 
+data_item <- bilingual_swad_item_data |>
+    select(produces, age, exposure_proportion, child_id, uni_lemma, item_id, language) |>
+    na.omit()
+
 # Generate a B-spline basis for exposure with 4 degrees of freedom
 exposure_spline <- bs(data_item$exposure_proportion, df = 4)
 
@@ -394,10 +397,10 @@ options(mc.cores = parallel::detectCores())
 fit <- stan(file = "models/model4-exposure-spline.stan",
             data = stan_data,
             model_name = "exposure-spline",
-            control = list(max_treedepth=12),
-            iter = 2500, warmup = 1000, chains = 4, seed = 123,
+            control = list(max_treedepth=15),
+            iter = 4000, warmup = 1000, chains = 4, seed = 123,
             thin = 2)
-saveRDS(fit, file="models/model4-exposure-spline_fit.rds")
+saveRDS(fit, file="models/model4-exposure-spline_SCDI_fit.rds")
 ```
 
 ```{r}
