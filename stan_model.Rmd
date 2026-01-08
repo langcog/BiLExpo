@@ -89,6 +89,32 @@ rm(fit_cubic)
 ```
 
 
+# Model 4: Non-linear Effect of Exposure
+
+```{r}
+library(splines)
+
+# Generate a B-spline basis for exposure with 4 degrees of freedom
+exposure_spline <- bs(stan_data$exposure, df = 4)
+
+stan_data_spline <- stan_data |>
+  within({
+    exposure_spline <- exposure_spline
+  })
+
+```
+
+```{r, eval=F}
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores()) 
+
+fit <- stan(file = "models/model4-exposure-spline.stan",
+            data = stan_data_spline,
+            model_name = "exposure-spline",
+            control = list(max_treedepth=15),
+            iter = 4000, warmup = 1000, chains = 4, seed = 123) # thin = 2
+saveRDS(fit, file="models/model4-exposure-spline_SCDI_fit.rds")
+```
 
 
 ...by lexical category:
@@ -194,7 +220,7 @@ ggplot(df_ppc, aes(x = predicted, fill = factor(observed))) +
 # Model 3: Non-linear Effect of Age
 
 
-```{r}
+```{r, eval=F}
 library(splines)
 
 # Generate a B-spline basis for age with 4 degrees of freedom
@@ -248,7 +274,7 @@ plot(fit, pars=c("beta_age_spline[1]", "beta_age_spline[2]",
 ## Posterior Predictive Check
 
 
-```{r}
+```{r, eval=F}
 posterior_samples <- extract(fit)
 beta_age_spline <- posterior_samples$beta_age_spline
 
@@ -358,54 +384,11 @@ ggplot(df_ppc, aes(x = predicted, fill = factor(observed))) +
 ```
 
 
-# Model 4: Non-linear Effect of Exposure
 
-```{r}
-library(splines)
-
-data_item <- bilingual_swad_item_data |>
-    select(produces, age, exposure_proportion, child_id, uni_lemma, item_id, language) |>
-    na.omit()
-
-# Generate a B-spline basis for exposure with 4 degrees of freedom
-exposure_spline <- bs(data_item$exposure_proportion, df = 4)
-
-# Add the spline basis 
-data_item <- cbind(data_item, exposure_spline)
-
-# Prepare the Stan data list
-stan_data <- list(
-  N = nrow(data_item),
-  I = length(unique(data_item$child_id)),
-  W = length(unique(data_item$uni_lemma)),
-  J = length(unique(data_item$item_id)),
-  L = length(unique(data_item$language)),
-  y = data_item$produces,
-  age = data_item$age,
-  child = as.integer(as.factor(data_item$child_id)),
-  word = as.integer(as.factor(data_item$uni_lemma)),
-  item = as.integer(as.factor(data_item$item_id)),
-  lang = as.integer(as.factor(data_item$language)),
-  exposure_spline = as.matrix(exposure_spline)
-)
-```
-
-```{r, eval=F}
-rstan_options(auto_write = TRUE)
-options(mc.cores = parallel::detectCores()) 
-
-fit <- stan(file = "models/model4-exposure-spline.stan",
-            data = stan_data,
-            model_name = "exposure-spline",
-            control = list(max_treedepth=15),
-            iter = 4000, warmup = 1000, chains = 4, seed = 123,
-            thin = 2)
-saveRDS(fit, file="models/model4-exposure-spline_SCDI_fit.rds")
-```
 
 ```{r}
 # Check the results
-fit <- readRDS("models/model4-exposure-spline_fit.rds")
+fit <- readRDS("models/model4-exposure-spline_CDI_fit.rds")
 #plot(fit)
 plot(fit, pars=c("beta_exposure_spline[1]", "beta_exposure_spline[2]", 
                  "beta_exposure_spline[3]", "beta_exposure_spline[4]",
@@ -439,7 +422,7 @@ spline_df <- data.frame(exposure_proportion, predicted_splines, ci_lower, ci_upp
 
 # Plot with credible intervals
 ggplot(spline_df, aes(x = exposure_proportion)) +
-  geom_line(aes(y = predicted_spline), color = "blue", size = 1) +
+  geom_line(aes(y = predicted_spline), color = "blue", linewidth = 1) +
   geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, fill = "blue") +
   labs(x = "Exposure Proportion", y = "Predicted Spline Effect", title = "Fitted Spline with 95% Credible Interval") +
   theme_minimal()
@@ -451,8 +434,8 @@ ggplot(spline_df, aes(x = exposure_proportion)) +
 
 ```{r}
 # Check the results
-fit_quad <- readRDS("models/model5_fit.rds")
-plot(fit, pars=c("beta_age", "beta_exposure", "beta_exposure2", "beta_age_exposure")) # alpha
+fit_quad <- readRDS("models/model5_SCDI_fit.rds")
+plot(fit_quad, pars=c("beta_age", "beta_exposure", "beta_exposure2", "beta_age_exposure")) # alpha
 ```
 
 
@@ -461,7 +444,7 @@ plot(fit, pars=c("beta_age", "beta_exposure", "beta_exposure2", "beta_age_exposu
 
 ```{r}
 # Check the results
-fit_cubic <- readRDS("models/model6_fit.rds")
+fit_cubic <- readRDS("models/model6_SCDI_fit.rds")
 plot(fit_cubic, pars=c("beta_age", "beta_exposure", "beta_exposure2", "beta_exposure3", 
                  "beta_age_exposure")) # alpha
 ```
@@ -475,22 +458,34 @@ If differences are small or uncertain (SE > ΔLOOIC), look at even simpler model
 ```{r}
 library(loo)
 
-fit_linear <- readRDS("models/model2_fit.rds")
-fit_quad <- readRDS("models/model5_fit.rds")
-fit_cubic <- readRDS("models/model6_fit.rds")
+# scdi_models = c("model2_SCDI_fit.rds","model5_SCDI_fit.rds","model6_SCDI_fit.rds","model4-exposure-spline_SCDI_fit.rds")
 
-# Extract log_lik matrices
+fit_linear <- readRDS("models/model2_SCDI_fit.rds")
 log_lik_linear <- extract_log_lik(fit_linear, merge_chains = FALSE)
+rm(fit_linear)
+
+fit_quad <- readRDS("models/model5_SCDI_fit.rds")
 log_lik_quad   <- extract_log_lik(fit_quad, merge_chains = FALSE)
+rm(fit_quad)
+
+fit_cubic <- readRDS("models/model6_SCDI_fit.rds")
 log_lik_cubic  <- extract_log_lik(fit_cubic, merge_chains = FALSE)
+rm(fit_cubic)
+
+fit_spline <- readRDS("models/model4-exposure-spline_SCDI_fit.rds")
+log_lik_spline  <- extract_log_lik(fit_spline, merge_chains = FALSE)
+rm(fit_spline)
+
 
 # Compute LOO for eachWarning: Can't fit generalized Pareto distribution because all tail values are the same.
 loo_linear <- loo(log_lik_linear)
 loo_quad   <- loo(log_lik_quad)
-loo_cubic  <- loo(log_lik_cubic)
+loo_cubic  <- loo(log_lik_cubic) # Warning: Some Pareto k diagnostic values are too high. See help('pareto-k-diagnostic') for details.
+
+loo_spline <- loo(log_lik_spline)
 
 # Compare them
-loo_compare(loo_linear, loo_quad, loo_cubic)
+loo_compare(loo_linear, loo_quad, loo_cubic) # loo_spline
 ```
 
 
