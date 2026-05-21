@@ -2,5 +2,15 @@
 .Rhistory
 .RData
 .Ruserdata
+rsconnect/
 
 .DS_Store
+.positai
+
+# Optional vendored dependency (clone from Bitbucket if needed)
+vendor/distals/
+
+models/
+data/
+instruments/
+archive/

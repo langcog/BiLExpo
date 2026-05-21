@@ -1,0 +1,232 @@
+---
+title: "O4 Language distance (distals) — exploratory"
+format: html
+params:
+  stage2_variant: "linear"
+  fit_distance_models: true
+---
+
+```{r, include=FALSE}
+library(glue)
+library(here)
+library(brms)
+library(cmdstanr)
+library(patchwork)
+library(tidyverse)
+
+theme_set(
+  theme_bw() +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_blank(),
+      strip.background = element_blank(),
+      legend.position = "bottom"
+    )
+)
+
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+```{r}
+iso_project <- read_csv(here("data", "language_distance_lookup.csv"), show_col_types = FALSE)
+iso_exposure <- read_csv(here("data", "exposure_language_to_iso.csv"), show_col_types = FALSE) |>
+  mutate(key_lc = str_to_lower(str_trim(exposure_language)))
+
+normalize_exposure_key <- function(x) {
+  x <- str_trim(str_replace_all(as.character(x), "[\u000b]", ""))
+  str_to_lower(x)
+}
+
+iso_from_exposure <- function(x) {
+  k <- normalize_exposure_key(x)
+  iso_exposure$iso_639_3[match(k, iso_exposure$key_lc)]
+}
+
+iso_from_project_language <- function(x) {
+  iso_project$iso_639_3[match(x, iso_project$project_language)]
+}
+
+df_demogs <- readRDS(here("data", "demographics.rds"))
+
+lang_long <- df_demogs |>
+  mutate(data_id = as.character(data_id)) |>
+  filter(map(languages, nrow) > 1) |> 
+  unnest(languages) |>
+  filter(!is.na(exposure_language), !is.na(exposure_proportion)) |>
+  dplyr::select(data_id, exposure_language, exposure_proportion) |>
+  mutate(
+    key_lc = normalize_exposure_key(exposure_language),
+    iso_el = iso_from_exposure(exposure_language)
+  )
+
+child_data <- readRDS(here("data", "bilingual_hirt_stage2_data.rds")) |>
+  filter(!is.na(theta_est))
+
+child_o4 <- child_data |>
+  filter(age >= 7) |>
+  mutate(
+    exposure_proportion = exposure_proportion / 100,
+    exp_c = scale(exposure_proportion, scale = FALSE)[, 1],
+    age_c = scale(age, scale = FALSE)[, 1],
+    iso_target = iso_from_project_language(language),
+    key_el = normalize_exposure_key(exposure_language)
+  )
+
+counter_iso <- map2_chr(child_o4$data_id, child_o4$key_el, \(d, k) {
+  cand <- lang_long |>
+    filter(.data$data_id == d, key_lc != k)
+
+  if (nrow(cand) == 0) {
+    return(NA_character_)
+  }
+
+  mx <- max(cand$exposure_proportion, na.rm = TRUE)
+  cand |>
+    filter(exposure_proportion == mx) |>
+    arrange(exposure_language) |>
+    slice_head(n = 1) |>
+    pull(iso_el)
+})
+
+child_o4 <- child_o4 |> mutate(iso_other = counter_iso)
+
+pair_tbl <- child_o4 |>
+  filter(!is.na(iso_target), !is.na(iso_other)) |>
+  mutate(
+    iso_a = pmin(iso_target, iso_other),
+    iso_b = pmax(iso_target, iso_other)
+  ) |>
+  distinct(iso_a, iso_b)
+
+pair_tbl |> nrow()
+
+child_o4 |>
+  summarise(
+    n = n(),
+    missing_target_iso = sum(is.na(iso_target)),
+    missing_other_iso = sum(is.na(iso_other))
+  )
+```
+
+Export unique ISO pairs for **distals** lookup ([Bitbucket](https://bitbucket.org/robvanderg/distals/src/master/)): distances are **precomputed** in the DistaLs database — run [`scripts/distals_pairwise.py`](scripts/distals_pairwise.py) after `pip install distals` (database caches under `~/.cache/distals/`).
+
+```{r}
+pairs_file <- here("data", "language_pairs_for_distals.txt")
+
+pair_tbl |>
+  mutate(line = glue("{iso_a},{iso_b}")) |>
+  dplyr::pull(line) |>
+  unique() |>
+  write_lines(pairs_file)
+
+head(readLines(pairs_file), 10)
+```
+
+```{r}
+## DistaLs uses -1 when a distance cannot be computed (missing features / threshold).
+dist_sentinel_na <- function(x) {
+  v <- suppressWarnings(as.numeric(x))
+  v[!is.na(v) & v == -1] <- NA_real_
+  v
+}
+
+dist_csv <- here("data", "language_pair_distances.csv")
+if (file.exists(dist_csv)) {
+  dist_wide <- read_csv(dist_csv, show_col_types = FALSE) |>
+    mutate(across(
+      any_of(c("lang2vec", "grambank", "glot_tree", "asjp")),
+      dist_sentinel_na
+    ))
+  print(dist_wide |> head())
+} else {
+  dist_wide <- NULL
+  message("Create ", dist_csv, " via scripts/distals_pairwise.py pairs_file -> CSV columns iso_a, iso_b, lang2vec, grambank, glot_tree, asjp")
+}
+```
+
+```{r}
+if (!is.null(dist_wide) && nrow(dist_wide) > 0) {
+  dist_join <- dist_wide |>
+    mutate(
+      iso_lo = pmin(iso_a, iso_b),
+      iso_hi = pmax(iso_a, iso_b)
+    ) |>
+    dplyr::select(iso_lo, iso_hi, lang2vec, grambank, glot_tree, asjp) |>
+    distinct(iso_lo, iso_hi, .keep_all = TRUE)
+
+  child_o4 <- child_o4 |>
+    mutate(
+      iso_lo = pmin(iso_target, iso_other),
+      iso_hi = pmax(iso_target, iso_other)
+    ) |>
+    left_join(dist_join, by = c("iso_lo", "iso_hi"))
+
+  centre_vec <- function(v) {
+    if (all(is.na(v))) {
+      return(rep(NA_real_, length(v)))
+    }
+    v - mean(v, na.rm = TRUE)
+  }
+
+  child_o4 <- child_o4 |>
+    mutate(
+      lang2vec_c = centre_vec(lang2vec),
+      grambank_c = centre_vec(grambank),
+      glot_tree_c = centre_vec(glot_tree),
+      asjp_c = centre_vec(asjp)
+    )
+}
+```
+
+# Models (one metric at a time)
+
+```{r eval=params$fit_distance_models}
+if (!("lang2vec_c" %in% names(child_o4)) || all(is.na(child_o4$lang2vec_c))) {
+  stop("Need merged distances (language_pair_distances.csv)")
+}
+
+metrics <- c("lang2vec_c", "grambank_c", "glot_tree_c", "asjp_c")
+
+mod_all <- map(metrics, \(m) {
+  f <- as.formula(glue(
+    "theta_est | mi(theta_se) ~ age_c * exp_c * {m} + ",
+    "(1 | child_id) + (age_c * exp_c | dataset_name * language)"
+  ))
+
+  fit <- brm(
+    f,
+    data = child_o4,
+    family = gaussian(),
+    prior = c(
+      prior(normal(0, 1), class = Intercept),
+      prior(normal(0, 1), class = b),
+      prior(exponential(1), class = sd)
+    ),
+    save_pars = save_pars(all = TRUE),
+    backend = "cmdstanr",
+    chains = 4,
+    iter = 2000,
+    cores = 4,
+    seed = 126,
+    threads = threading(2)
+  )
+
+  saveRDS(fit, here("models", glue("stage2_o4_{m}.rds")))
+  
+  fit
+})
+```
+
+```{r}
+map(mod_all, summary)
+```
+
+
+```{r}
+baseline <- readRDS(here(
+  "models",
+  glue("bilingual_hirt_stage2_model_{params$stage2_variant}.rds")
+))
+
+fixef(baseline)
+```

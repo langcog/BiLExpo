@@ -1,0 +1,134 @@
+---
+title: "O3.4 Exclude 0% / 100% exposure — exploratory"
+format: html
+params:
+  stage2_variant: "linear"
+  refit_interior_exposure: true
+---
+
+```{r, include=FALSE}
+library(glue)
+library(here)
+library(brms)
+library(cmdstanr)
+library(patchwork)
+library(tidyverse)
+
+theme_set(
+  theme_bw() +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_blank(),
+      strip.background = element_blank(),
+      legend.position = "bottom"
+    )
+)
+
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+```{r}
+child_data <- readRDS(here("data", "bilingual_hirt_stage2_data.rds")) |>
+  filter(!is.na(theta_est))
+
+child_full <- child_data |>
+  filter(age >= 7) |>
+  mutate(
+    exposure_proportion = exposure_proportion / 100,
+    exp_c = scale(exposure_proportion, scale = FALSE)[, 1],
+    age_c = scale(age, scale = FALSE)[, 1]
+  )
+
+child_interior <- child_full |>
+  filter(exposure_proportion > 0, exposure_proportion < 1) |>
+  mutate(
+    exp_c = scale(exposure_proportion, scale = FALSE)[, 1],
+    age_c = scale(age, scale = FALSE)[, 1]
+  )
+
+n_full <- nrow(child_full)
+n_int <- nrow(child_interior)
+
+tibble(stage = c("full_sample", "interior_exposure_only"), n_rows = c(n_full, n_int))
+```
+
+Centring for `exp_c` and `age_c` is recomputed on the **interior** subsample so offsets match the sensitivity analysis.
+
+# Refit stage 2 (same functional family as `params$stage2_variant`)
+
+```{r eval=params$refit_interior_exposure}
+stage2_theta_formula_linear <- bf(
+  theta_est | mi(theta_se) ~ age_c * exp_c + (1 | child_id) +
+    (age_c * exp_c | dataset_name * language)
+)
+
+fit_interior <- brm(
+  formula = stage2_theta_formula_linear,
+  data = child_interior,
+  family = gaussian(),
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sd)
+  ),
+  save_pars = save_pars(all = TRUE),
+  backend = "cmdstanr",
+  chains = 4,
+  iter = 2000,
+  cores = 4,
+  seed = 125,
+  threads = threading(2)
+)
+
+saveRDS(fit_interior, here(
+  "models",
+  glue("bilingual_hirt_stage2_model_{params$stage2_variant}_interior_exposure.rds")
+))
+```
+
+```{r eval=params$refit_interior_exposure}
+stage2_theta_formula_log <- bf(
+  theta_est | mi(theta_se) ~ age_c * log_exp_c + 
+    (1 | child_id) + (age_c * log_exp_c | dataset_name * language)
+)
+
+fit_interior_log <- brm(
+  formula = stage2_theta_formula_log,
+  data = child_interior |> 
+    mutate(log_exp_c = scale(log(exposure_proportion), scale = F)),
+  family = gaussian(),
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sd)
+  ),
+  save_pars = save_pars(all = TRUE),
+  backend = "cmdstanr",
+  chains = 4,
+  iter = 2000,
+  cores = 4,
+  seed = 123
+)
+
+saveRDS(fit_interior_log, here("models", "bilingual_hirt_stage2_model_log_interior_exposure.rds"))
+```
+
+```{r}
+loo_compare(
+  loo(fit_interior),
+  loo(fit_interior_log)
+)
+```
+
+
+```{r eval=!params$refit_interior_exposure}
+## Baseline (full sample, precomputed)
+baseline <- readRDS(here(
+  "models",
+  glue("bilingual_hirt_stage2_model_{params$stage2_variant}.rds")
+))
+
+fixef(baseline)
+```
+
+After setting `params$refit_interior_exposure: true` and rendering, compare `fixef(fit_interior)` to the baseline RDS loaded above.

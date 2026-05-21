@@ -1,0 +1,407 @@
+---
+title: "O2 Lexical class subset models — exploratory"
+format: html
+params:
+  stage2_variant: "linear"
+  fit_stage_models: false
+---
+
+```{r, include=FALSE}
+library(glue)
+library(here)
+library(brms)
+library(cmdstanr)
+library(patchwork)
+library(tidyverse)
+
+theme_set(
+  theme_bw() +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_blank(),
+      strip.background = element_blank(),
+      legend.position = "bottom"
+    )
+)
+
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+# Item table (`df_data`)
+
+```{r}
+bilingual_item_data_clean <- readRDS(here("data", "items.rds"))
+
+f_instruments <- list.files(here("instruments"))
+all_instruments <- map(f_instruments, \(f) {
+  read_csv(here("instruments", f), show_col_types = FALSE) |>
+    mutate(uid = glue("item_{row_number()}")) |>
+    pivot_longer(
+      cols = -c(category, definition, gloss, uni_lemma, uid),
+      names_to = "form",
+      values_to = "item_id"
+    ) |>
+    mutate(
+      language = str_remove(f, ".csv"),
+      uid = glue("{language}_{uid}")
+    )
+}) |>
+  list_rbind() |>
+  filter(!is.na(item_id)) |>
+  mutate(form = case_when(
+    form == "OxfordExtended" ~ "Oxford Extended",
+    form == "OxfordShortII" ~ "Oxford Short II",
+    form == "WSExtended" ~ "WS Extended",
+    form == "WGShort" ~ "WG Short",
+    .default = form
+  ))
+
+df_data <- bilingual_item_data_clean |>
+  rename(unilemma = uni_lemma) |>
+  filter(
+    item_kind == "word",
+    language != "Other Langs"
+  ) |>
+  left_join(
+    all_instruments |> dplyr::select(language, form, item_id, uid),
+    by = join_by(language, form, item_id)
+  ) |>
+  mutate(
+    uid = coalesce(uid, glue("{language}_{item_id}")),
+    value = as.numeric(produces),
+    age_sc = scale(age)[, 1]
+  ) |>
+  filter(!is.na(value))
+```
+
+# Derived lexical class `lex_class_o2`
+
+Rules: `action_words` → verbs; `descriptive_words` → adjectives; `adverbs` → other; nouns / function_words / verbs / adjectives from `lexical_category` where not superseded; remaining predicates → other; lexical `other` → other.
+
+```{r}
+df_items_lex <- df_data |>
+  mutate(
+    lex_class_o2 = case_when(
+      category == "action_words" ~ "verbs",
+      category == "descriptive_words" ~ "adjectives",
+      lexical_category == "adverbs" ~ "other",
+      lexical_category == "nouns" ~ "nouns",
+      lexical_category == "function_words" ~ "function_words",
+      lexical_category == "verbs" ~ "verbs",
+      lexical_category == "adjectives" ~ "adjectives",
+      lexical_category == "predicates" ~ "other",
+      lexical_category == "other" ~ "other",
+      TRUE ~ NA_character_
+    )
+  )
+
+df_na_check <- df_items_lex |>
+  filter(is.na(lex_class_o2)) |>
+  dplyr::select(
+    language, form, item_id, uid, category,
+    lexical_category, lex_class_o2
+  )
+
+readr::write_csv(df_na_check, here("data", "lexical_class_na_check.csv"))
+
+count(df_items_lex, lex_class_o2, sort = TRUE)
+```
+
+Quality-control file of unresolved rows: [`data/lexical_class_na_check.csv`](data/lexical_class_na_check.csv).
+
+# Stage 1 per lexical class
+
+```{r eval=params$fit_stage_models}
+stage1_formula <- bf(
+  value ~ exp(logalpha) * (theta + beta),
+  theta ~ 0 + (1 | data_id),
+  beta ~ 0 + (1 |i| uid),
+  logalpha ~ 1 + (1 |i| uid),
+  nl = TRUE
+)
+
+stage1_priors <- c(
+  prior(normal(0, 1), class = "b", nlpar = "logalpha"),
+  prior(normal(0, 1), class = "sd", nlpar = "theta"),
+  prior(normal(0, 1), class = "sd", nlpar = "beta"),
+  prior(normal(0, 1), class = "sd", nlpar = "logalpha")
+)
+
+lex_classes <- c("nouns", "verbs", "adjectives", "function_words")
+
+for (lc in lex_classes) {
+  df_sub <- df_items_lex |> filter(lex_class_o2 == lc)
+  if (nrow(df_sub) < 1000) {
+    warning("Very few rows for ", lc)
+  }
+  mod <- brm(
+    formula = stage1_formula,
+    data = df_sub,
+    family = bernoulli(link = "logit"),
+    prior = stage1_priors,
+    algorithm = "meanfield",
+    iter = 10000,
+    tol_rel_obj = 1e-4,
+    backend = "cmdstanr",
+    threads = threading(2),
+    seed = 123
+  )
+  saveRDS(mod, here("models", glue("stage1_lexical_{lc}.rds")))
+}
+```
+
+Set chunk `eval: true` locally after reviewing subset sizes; variational fits are slow.
+
+# Stage 2 per lexical class
+
+This follows the same stage-2 setup as `02_exposure_models.qmd`, but uses \(\hat{\theta}\) estimates derived from a stage-1 fit on a lexical-class item subset.
+
+```{r eval=params$fit_stage_models}
+df_demogs <- readRDS(here("data", "demographics.rds"))
+
+theta_from_stage1 <- function(mod) {
+  theta_ranef <- ranef(mod, summary = TRUE)$data_id[, , "theta_Intercept"]
+  theta_fixed <- 0
+  tibble(
+    data_id = rownames(theta_ranef),
+    theta_est = theta_fixed + theta_ranef[, "Estimate"],
+    theta_se = theta_ranef[, "Est.Error"]
+  )
+}
+
+make_child_data_for_theta <- function(theta_estimates, ds_lang_lookup) {
+  df_demogs |>
+    left_join(ds_lang_lookup, by = "data_id") |>
+    mutate(age_sc = scale(age)[, 1]) |>
+    dplyr::select(data_id, child_id, age_sc, dataset_name, language, age, languages) |>
+    mutate(
+      data_id = as.character(data_id),
+      child_id = as.character(child_id)
+    ) |>
+    unnest(languages) |>
+    filter(!is.na(exposure_language), !is.na(exposure_proportion)) |>
+    dplyr::select(-age_first_exposed) |>
+    filter(
+      str_detect(language, glue("^{exposure_language}")) |
+        exposure_language == "Chinese" & str_detect(language, "^Mandarin")
+    ) |>
+    mutate(exp_sc = scale(log1p(exposure_proportion / 100))[, 1]) |>
+    left_join(theta_estimates, by = "data_id") |>
+    filter(exposure_proportion <= 100, !is.na(theta_est))
+}
+
+stage2_fit <- function(child_data_cleaned, variant) {
+  if (variant == "linear") {
+    brm(
+      bf(theta_est | mi(theta_se) ~ age_c * exp_c +
+        (1 | child_id) + (age_c * exp_c | dataset_name * language)),
+      data = child_data_cleaned,
+      family = gaussian(),
+      prior = c(
+        prior(normal(0, 1), class = Intercept),
+        prior(normal(0, 1), class = b),
+        prior(exponential(1), class = sd)
+      ),
+      save_pars = save_pars(all = TRUE),
+      backend = "cmdstanr",
+      chains = 4,
+      iter = 2000,
+      cores = 4,
+      seed = 123
+    )
+  } else if (variant == "quadratic") {
+    brm(
+      bf(theta_est | mi(theta_se) ~ age_c * poly(exp_c, 2) +
+        (1 | child_id) + (age_c * exp_c | dataset_name * language)),
+      data = child_data_cleaned,
+      family = gaussian(),
+      prior = c(
+        prior(normal(0, 1), class = Intercept),
+        prior(normal(0, 1), class = b),
+        prior(exponential(1), class = sd)
+      ),
+      save_pars = save_pars(all = TRUE),
+      backend = "cmdstanr",
+      chains = 4,
+      iter = 2000,
+      cores = 4,
+      seed = 123
+    )
+  } else if (variant == "cubic") {
+    brm(
+      bf(theta_est | mi(theta_se) ~ age_c * poly(exp_c, 3) +
+        (1 | child_id) + (age_c * exp_c | dataset_name * language)),
+      data = child_data_cleaned,
+      family = gaussian(),
+      prior = c(
+        prior(normal(0, 1), class = Intercept),
+        prior(normal(0, 1), class = b),
+        prior(exponential(1), class = sd)
+      ),
+      save_pars = save_pars(all = TRUE),
+      backend = "cmdstanr",
+      chains = 4,
+      iter = 2000,
+      cores = 4,
+      seed = 123
+    )
+  } else if (variant == "exp") {
+    brm(
+      bf(theta_est | mi(theta_se) ~ age_c * exp_exp_c +
+        (1 | child_id) + (age_c * exp_exp_c | dataset_name * language)),
+      data = child_data_cleaned |>
+        mutate(exp_exp_c = scale(exp(exposure_proportion), scale = FALSE)),
+      family = gaussian(),
+      prior = c(
+        prior(normal(0, 1), class = Intercept),
+        prior(normal(0, 1), class = b),
+        prior(exponential(1), class = sd)
+      ),
+      save_pars = save_pars(all = TRUE),
+      backend = "cmdstanr",
+      chains = 4,
+      iter = 2000,
+      cores = 4,
+      seed = 123
+    )
+  } else if (variant == "log") {
+    brm(
+      bf(theta_est | mi(theta_se) ~ age_c * log_exp_c +
+        (1 | child_id) + (age_c * log_exp_c | dataset_name * language)),
+      data = child_data_cleaned |>
+        mutate(log_exp_c = scale(log(exposure_proportion + .01), scale = FALSE)),
+      family = gaussian(),
+      prior = c(
+        prior(normal(0, 1), class = Intercept),
+        prior(normal(0, 1), class = b),
+        prior(exponential(1), class = sd)
+      ),
+      save_pars = save_pars(all = TRUE),
+      backend = "cmdstanr",
+      chains = 4,
+      iter = 2000,
+      cores = 4,
+      seed = 123
+    )
+  } else if (variant == "pw") {
+    brm(
+      bf(
+        theta_est | mi(theta_se) ~ b0 + b1 * age_c +
+          b2 * (exp_c - omega) * step(omega - exp_c) +
+          b3 * (exp_c - omega) * step(exp_c - omega) +
+          b4 * age_c * (exp_c - omega) * step(omega - exp_c) +
+          b5 * age_c * (exp_c - omega) * step(exp_c - omega),
+        b0 ~ 1 + (1 | child_id),
+        b1 + b2 + b3 + b4 + b5 + alpha ~ 1 + (1 | dataset_name * language),
+        nlf(omega ~ inv_logit(alpha) - 0.553),
+        nl = TRUE
+      ),
+      data = child_data_cleaned,
+      family = gaussian(),
+      prior = c(
+        prior(normal(0, 1), nlpar = "b0"),
+        prior(normal(0, 1), nlpar = "b1"),
+        prior(normal(0, 1), nlpar = "b2"),
+        prior(normal(0, 1), nlpar = "b3"),
+        prior(normal(0, 1), nlpar = "b4"),
+        prior(normal(0, 1), nlpar = "b5"),
+        prior(normal(0, 1), nlpar = "alpha"),
+        prior(exponential(1), class = sd, nlpar = "b0"),
+        prior(exponential(1), class = sd, nlpar = "b1"),
+        prior(exponential(1), class = sd, nlpar = "b2"),
+        prior(exponential(1), class = sd, nlpar = "b3"),
+        prior(exponential(1), class = sd, nlpar = "b4"),
+        prior(exponential(1), class = sd, nlpar = "b5"),
+        prior(exponential(1), class = sd, nlpar = "alpha"),
+        prior(exponential(1), class = sigma)
+      ),
+      save_pars = save_pars(all = TRUE),
+      backend = "cmdstanr",
+      chains = 4,
+      iter = 2000,
+      cores = 4,
+      seed = 123
+    )
+  } else {
+    stop("Unknown stage2_variant: ", variant)
+  }
+}
+
+lex_classes <- c("nouns", "verbs", "adjectives", "function_words")
+
+for (lc in lex_classes) {
+  message("Lexical class: ", lc)
+
+  stage1_path <- here("models", glue("stage1_lexical_{lc}.rds"))
+  if (!file.exists(stage1_path)) {
+    warning("Missing stage-1 model for ", lc, " at ", stage1_path)
+    next
+  }
+
+  mod1 <- readRDS(stage1_path)
+  theta_estimates <- theta_from_stage1(mod1)
+
+  ds_lang_lookup <- df_items_lex |>
+    filter(lex_class_o2 == lc) |>
+    distinct(data_id, dataset_name, language) |>
+    mutate(data_id = as.character(data_id))
+
+  child_lc <- make_child_data_for_theta(theta_estimates, ds_lang_lookup)
+
+  child_lc_clean <- child_lc |>
+    filter(age >= 7) |>
+    mutate(
+      exposure_proportion = exposure_proportion / 100,
+      exp_c = scale(exposure_proportion, scale = FALSE)[, 1],
+      age_c = scale(age, scale = FALSE)[, 1]
+    )
+
+  fit2 <- stage2_fit(child_lc_clean, params$stage2_variant)
+  saveRDS(
+    fit2,
+    here("models", glue("stage2_lexical_{lc}_{params$stage2_variant}.rds"))
+  )
+}
+```
+
+# Compare to pooled stage-2 baseline
+
+```{r}
+baseline_stage2 <- readRDS(here(
+  "models",
+  glue("bilingual_hirt_stage2_model_{params$stage2_variant}.rds")
+))
+
+fixef(baseline_stage2)
+```
+
+When lexical-specific stage-2 fits exist, compare their population-level effects to the pooled baseline.
+
+```{r}
+lex_classes <- c("nouns", "verbs", "adjectives", "function_words")
+
+read_lex_fit <- function(lc, variant) {
+  p <- here("models", glue("stage2_lexical_{lc}_{variant}.rds"))
+  if (!file.exists(p)) return(NULL)
+  readRDS(p)
+}
+
+lex_fixef <- map(lex_classes, \(lc) {
+  mod <- read_lex_fit(lc, params$stage2_variant)
+  if (is.null(mod)) return(NULL)
+  fx <- fixef(mod) |> as.data.frame()
+  fx$term <- rownames(fx)
+  tibble(lex_class = lc) |>
+    bind_cols(as_tibble(fx))
+}) |>
+  list_rbind()
+
+if (nrow(lex_fixef) == 0) {
+  message("No lexical stage-2 models found to compare.")
+} else {
+  lex_fixef |>
+    filter(term %in% c("Intercept", "age_c", "exp_c", "age_c:exp_c")) |>
+    select(lex_class, term, Estimate, Est.Error, Q2.5, Q97.5) |>
+    arrange(term, lex_class)
+}
+```

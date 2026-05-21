@@ -1,0 +1,200 @@
+---
+title: "O3.3 Per-language IRT + stage 2 — exploratory"
+format: html
+params:
+  stage2_variant: "linear"
+  run_per_language_models: false
+---
+
+```{r, include=FALSE}
+library(glue)
+library(here)
+library(brms)
+library(cmdstanr)
+library(tidyverse)
+
+theme_set(
+  theme_bw() +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_blank(),
+      strip.background = element_blank(),
+      legend.position = "bottom"
+    )
+)
+
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+```{r}
+bilingual_item_data_clean <- readRDS(here("data", "items.rds"))
+
+f_instruments <- list.files(here("instruments"))
+all_instruments <- map(f_instruments, \(f) {
+  read_csv(here("instruments", f), show_col_types = FALSE) |>
+    mutate(uid = glue("item_{row_number()}")) |>
+    pivot_longer(
+      cols = -c(category, definition, gloss, uni_lemma, uid),
+      names_to = "form",
+      values_to = "item_id"
+    ) |>
+    mutate(
+      language = str_remove(f, ".csv"),
+      uid = glue("{language}_{uid}")
+    )
+}) |>
+  list_rbind() |>
+  filter(!is.na(item_id)) |>
+  mutate(form = case_when(
+    form == "OxfordExtended" ~ "Oxford Extended",
+    form == "OxfordShortII" ~ "Oxford Short II",
+    form == "WSExtended" ~ "WS Extended",
+    form == "WGShort" ~ "WG Short",
+    .default = form
+  ))
+
+df_data <- bilingual_item_data_clean |>
+  rename(unilemma = uni_lemma) |>
+  filter(item_kind == "word", language != "Other Langs") |>
+  left_join(
+    all_instruments |> dplyr::select(language, form, item_id, uid),
+    by = join_by(language, form, item_id)
+  ) |>
+  mutate(
+    uid = coalesce(uid, glue("{language}_{item_id}")),
+    value = as.numeric(produces),
+    age_sc = scale(age)[, 1]
+  ) |>
+  filter(!is.na(value))
+
+language_eligible <- df_data |>
+  group_by(language) |>
+  summarise(n_admin = n_distinct(data_id), .groups = "drop") |>
+  filter(n_admin > 100) |>
+  arrange(desc(n_admin))
+
+language_eligible
+```
+
+Eligibility rule: **`n_distinct(data_id)` per `language` > 100** administrations (words-only `df_data` inclusion).
+
+# Fit loop (stage 1 + stage 2)
+
+```{r eval=params$run_per_language_models}
+stage1_formula <- bf(
+  value ~ exp(logalpha) * (theta + beta),
+  theta ~ 0 + (1 | data_id),
+  beta ~ 0 + (1 |i| uid),
+  logalpha ~ 1 + (1 |i| uid),
+  nl = TRUE
+)
+
+stage1_priors <- c(
+  prior(normal(0, 1), class = "b", nlpar = "logalpha"),
+  prior(normal(0, 1), class = "sd", nlpar = "theta"),
+  prior(normal(0, 1), class = "sd", nlpar = "beta"),
+  prior(normal(0, 1), class = "sd", nlpar = "logalpha")
+)
+
+theta_from_stage1 <- function(mod) {
+  theta_ranef <- ranef(mod, summary = TRUE)$data_id[, , "theta_Intercept"]
+  theta_fixed <- 0
+  tibble(
+    data_id = rownames(theta_ranef),
+    theta_est = theta_fixed + theta_ranef[, "Estimate"],
+    theta_se = theta_ranef[, "Est.Error"]
+  )
+}
+
+df_demogs <- readRDS(here("data", "demographics.rds"))
+
+for (lang in language_eligible$language) {
+  df_lang <- df_data |> filter(language == lang)
+  safe <- str_replace_all(lang, "[^A-Za-z0-9]+", "_")
+  lang_base <- str_remove(lang, " \\(.*\\)$")
+
+  message("Stage 1: ", lang)
+  mod1 <- brm(
+    formula = stage1_formula,
+    data = df_lang,
+    family = bernoulli(link = "logit"),
+    prior = stage1_priors,
+    algorithm = "meanfield",
+    iter = 10000,
+    tol_rel_obj = 1e-4,
+    backend = "cmdstanr",
+    threads = threading(2),
+    seed = 123
+  )
+
+  saveRDS(mod1, here("models", glue("stage1_language_{safe}.rds")))
+
+  theta_estimates <- theta_from_stage1(mod1)
+
+  child_lang <- df_demogs |>
+    left_join(
+      bilingual_item_data_clean |>
+        dplyr::filter(language == lang) |>
+        dplyr::select(data_id, language) |>
+        distinct(),
+      by = "data_id"
+    ) |>
+    mutate(age_sc = scale(age)[, 1]) |>
+    dplyr::select(data_id, child_id, age_sc, dataset_name, language, age, languages) |>
+    mutate(
+      data_id = as.character(data_id),
+      child_id = as.character(child_id)
+    ) |>
+    unnest(languages) |>
+    filter(!is.na(exposure_language), !is.na(exposure_proportion)) |>
+    dplyr::select(-age_first_exposed) |>
+    filter(
+      exposure_language == lang_base |
+        (lang_base == "Mandarin" & exposure_language == "Chinese")
+    ) |>
+    mutate(exp_sc = scale(log1p(exposure_proportion / 100))[, 1]) |>
+    left_join(theta_estimates, by = "data_id") |>
+    filter(exposure_proportion <= 100)
+
+  child_lang_clean <- child_lang |>
+    filter(!is.na(theta_est), age >= 7) |>
+    mutate(
+      exposure_proportion = exposure_proportion / 100,
+      exp_c = scale(exposure_proportion, scale = FALSE)[, 1],
+      age_c = scale(age, scale = FALSE)[, 1]
+    )
+
+  message("Stage 2: ", lang)
+  ## Single language: random effects over dataset (language is constant)
+  fit2 <- brm(
+    bf(theta_est | mi(theta_se) ~ age_c * exp_c + (1 | child_id) +
+      (age_c * exp_c | dataset_name)),
+    data = child_lang_clean,
+    family = gaussian(),
+    prior = c(
+      prior(normal(0, 1), class = Intercept),
+      prior(normal(0, 1), class = b),
+      prior(exponential(1), class = sd)
+    ),
+    save_pars = save_pars(all = TRUE),
+    backend = "cmdstanr",
+    chains = 4,
+    iter = 2000,
+    cores = 4,
+    seed = 123
+  )
+
+  saveRDS(fit2, here("models", glue("stage2_language_{safe}.rds")))
+}
+```
+
+Compare each `stage2_language_*.rds` fixed effects to the pooled stage-2 model for `params$stage2_variant`:
+
+```{r}
+pooled <- readRDS(here(
+  "models",
+  glue("bilingual_hirt_stage2_model_{params$stage2_variant}.rds")
+))
+
+fixef(pooled)
+```

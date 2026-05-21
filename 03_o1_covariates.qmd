@@ -1,0 +1,248 @@
+---
+title: "O1 Covariates (sex, SES) — exploratory"
+format: html
+params:
+  stage2_variant: "linear"
+  m_imputations: 10
+  run_covariate_models: true
+---
+
+```{r, include=FALSE}
+library(glue)
+library(here)
+library(brms)
+library(cmdstanr)
+library(mice)
+library(patchwork)
+library(tidyverse)
+
+theme_set(
+  theme_bw() +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_blank(),
+      strip.background = element_blank(),
+      legend.position = "bottom"
+    )
+)
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 8,
+  fig.height = 5
+)
+```
+
+# Stage-2 data with demographics
+
+```{r}
+child_data <- readRDS(here("data", "bilingual_hirt_stage2_data.rds")) |>
+  filter(!is.na(theta_est))
+
+df_demogs <- readRDS(here("data", "demographics.rds")) |>
+  mutate(data_id = as.character(data_id))
+
+demo_cov <- df_demogs |>
+  dplyr::select(data_id, sex, caregiver_education)
+
+child_o1 <- child_data |>
+  left_join(demo_cov, by = "data_id")
+
+child_o1_clean <- child_o1 |>
+  filter(age >= 7) |>
+  mutate(
+    exposure_proportion = exposure_proportion / 100,
+    exp_c = scale(exposure_proportion, scale = FALSE)[, 1],
+    age_c = scale(age, scale = FALSE)[, 1]
+  )
+```
+
+# SES and sex coding
+
+```{r}
+edu_levels <- c(
+  "None",
+  "Primary",
+  "Some Secondary",
+  "Secondary",
+  "Some College",
+  "College",
+  "Some Graduate",
+  "Graduate"
+)
+
+child_o1_clean <- child_o1_clean |>
+  mutate(
+    edu_ord = factor(caregiver_education, levels = edu_levels, ordered = TRUE),
+    sex_std = case_when(
+      sex %in% c("F", "Female") ~ "Female",
+      sex %in% c("M", "Male") ~ "Male",
+      sex %in% c("Other") ~ NA_character_,
+      TRUE ~ NA_character_
+    ),
+    sex_f = factor(sex_std, levels = c("Female", "Male")),
+    edu_coll = replace_values(
+      caregiver_education,
+      c("College", "Some Graduate", "Graduate") ~ "College",
+      c("None", "Primary", "Some Secondary", "Secondary", "Some College") ~ "No/some college"
+    ) |> factor()
+  )
+
+child_o1_clean |>
+  summarise(
+    n = n(),
+    missing_sex = sum(is.na(sex_f)),
+    missing_edu = sum(is.na(edu_coll)),
+    complete_demo = sum(!is.na(sex_f) & !is.na(edu_ord))
+  )
+```
+
+```{r}
+edu_counts <- child_o1_clean |>
+  count(caregiver_education, sort = TRUE)
+
+edu_counts
+```
+
+# Multiple imputation (`mice`)
+
+Imputation targets missing `sex_f` and ordered SES (`edu_ord`). Stage-2 outcomes (`theta_est`, SEs, exposure, age) stay observed on analysis rows.
+
+```{r eval=params$run_covariate_models}
+demo_unique <- child_o1_clean |>
+  distinct(data_id, sex_f, edu_coll)
+
+imp <- mice(
+  demo_unique |> select(-data_id),
+  m = params$m_imputations,
+  maxit = 15,
+  seed = 123,
+  printFlag = FALSE
+)
+
+imp_full <- map(1:params$m_imputations, \(i) {
+  comp <- complete(imp, i) |> 
+    mutate(data_id = demo_unique$data_id,
+           sex_f = factor(sex_f, levels = c("Female", "Male", "Other")),
+           edu_coll = factor(edu_coll, levels = c("No/some college", "College")))
+  
+  child_o1_clean |>
+    dplyr::select(-sex_f, -edu_ord, -edu_coll, -sex_std, -sex, -caregiver_education) |>
+    left_join(
+      comp |> dplyr::select(data_id, sex_f, edu_coll),
+      by = "data_id"
+    )
+})
+
+fits_mi <- brm_multiple(
+  bf(theta_est | mi(theta_se) ~ age_c * exp_c + sex_f + edu_coll +
+       (1 | child_id) + (age_c * exp_c | dataset_name * language)),
+  data = imp_full,
+  family = gaussian(),
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = "b"),
+    prior(exponential(1), class = sd)
+  ),
+  save_pars = save_pars(all = TRUE),
+  backend = "cmdstanr",
+  chains = 2,
+  iter = 1000,
+  seed = 123,
+  cores = 2
+)
+
+# fits_mi <- vector("list", params$m_imputations)
+# for (i in seq_len(params$m_imputations)) {
+#   comp <- complete(imp, i) |>
+#     mutate(data_id = demo_unique$data_id) |>
+#     mutate(
+#       sex_f = factor(sex_f, levels = c("Female", "Male", "Other")),
+#       edu_ord = factor(edu_ord, levels = edu_levels, ordered = TRUE)
+#     )
+# 
+#   dat_i <- child_o1_clean |>
+#     dplyr::select(-sex_f, -edu_ord, -edu_std, -sex_std, -sex, -caregiver_education) |>
+#     left_join(
+#       comp |> dplyr::select(data_id, sex_f, edu_ord),
+#       by = "data_id"
+#     )
+# 
+#   fits_mi[[i]] <- brm(
+#     bf(theta_est | mi(theta_se) ~ age_c * exp_c + sex_f + mo(edu_ord) +
+#       (1 | child_id) + (age_c * exp_c | dataset_name * language)),
+#     data = dat_i,
+#     family = gaussian(),
+#     prior = c(
+#       prior(normal(0, 1), class = Intercept),
+#       prior(normal(0, 1), class = "b"),
+#       prior(exponential(1), class = sd),
+#       prior(dirichlet(2), class = "simo", coef = "moedu_ord1")
+#     ),
+#     save_pars = save_pars(all = TRUE),
+#     backend = "cmdstanr",
+#     chains = 2,
+#     iter = 1000,
+#     seed = 123,
+#     cores = 2
+#   )
+# }
+
+fit_mi_combined <- combine_models(fits_mi, check_data = F)
+saveRDS(fit_mi_combined, here("models", "stage2_o1_covariates_mi.rds"))
+```
+
+When `params$run_covariate_models` is `true`, the MI and complete-case chunks evaluate (long runtime).
+
+```{r eval=params$run_covariate_models}
+summary(fit_mi_combined)
+```
+
+# Complete-case sensitivity
+
+```{r eval=params$run_covariate_models}
+child_cc <- child_o1_clean |>
+  filter(!is.na(sex_f), !is.na(edu_coll))
+
+fit_cc <- brm(
+  bf(theta_est | mi(theta_se) ~ age_c * exp_c * (sex_f + edu_coll) +
+    (1 | child_id) + (age_c * exp_c | dataset_name * language)),
+  data = child_cc,
+  family = gaussian(),
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = "b"),
+    prior(exponential(1), class = sd)
+  ),
+  save_pars = save_pars(all = TRUE),
+  backend = "cmdstanr",
+  chains = 4,
+  iter = 2000,
+  cores = 4,
+  seed = 124,
+  threads = threading(2)
+)
+
+saveRDS(fit_cc, here("models", "stage2_o1_covariates_complete_case.rds"))
+```
+
+```{r eval=FALSE}
+## Inspect saved fits after running chunks above
+fit_cc <- readRDS(here("models", "stage2_o1_covariates_complete_case.rds"))
+summary(fit_cc)
+```
+
+# Comparison to baseline stage-2 model
+
+```{r}
+baseline <- readRDS(here(
+  "models",
+  glue("bilingual_hirt_stage2_model_{params$stage2_variant}.rds")
+))
+
+fixef(baseline)
+```
+
+Posterior summaries for covariate-augmented models should be compared to `baseline` fixed effects for `age_c`, `exp_c`, and their interaction once MI / complete-case fits are saved.

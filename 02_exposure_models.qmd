@@ -1,0 +1,361 @@
+---
+title: "Exposure models"
+format: html
+params:
+  refit: true
+---
+
+# Setup
+```{r, include=F}
+library(glue)
+library(here)
+library(brms)
+library(rstanarm)
+library(cmdstanr)
+library(posterior)
+library(bayesplot)
+library(patchwork)
+library(tidyverse)
+library(ggh4x)
+
+theme_set(theme_bw() +
+            theme(
+              panel.grid.minor = element_blank(),
+              panel.grid.major = element_blank(),
+              strip.background = element_blank(),
+              legend.position = "bottom"
+            ))
+```
+
+# Data prep
+```{r}
+child_data <- readRDS(here("data", "bilingual_hirt_stage2_data.rds"))
+```
+
+```{r}
+child_data_cleaned <- child_data |> 
+  filter(age >= 7,
+         !is.na(theta_est),
+         sumscore > 0) |> 
+  mutate(exposure_proportion = exposure_proportion / 100,
+         exp_c = scale(exposure_proportion, scale = F)[,1],
+         age_c = scale(age, scale = F)[,1])
+```
+
+# Stage 2 model
+```{r eval=params$refit}
+stage2_theta_formula_linear <- bf(
+  theta_est | mi(theta_se) ~ age_c * exp_c + (1 | child_id) + 
+    (age_c * exp_c | dataset_name * language)
+)
+
+stage2_theta_model_linear <- brm(
+  formula = stage2_theta_formula_linear,
+  data = child_data_cleaned,
+  family = gaussian(),
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sd)
+  ),
+  save_pars = save_pars(all = TRUE),
+  backend = "cmdstanr",
+  chains = 4,
+  iter = 2000,
+  cores = 4,
+  seed = 123
+)
+
+saveRDS(stage2_theta_model_linear, here("models", "bilingual_hirt_stage2_model_linear.rds"))
+```
+
+```{r eval=params$refit}
+stage2_theta_formula_quadratic <- bf(
+  theta_est | mi(theta_se) ~ age_c * poly(exp_c, 2) + 
+    (1 | child_id) + (age_c * poly(exp_c, 2) | dataset_name * language)
+)
+
+stage2_theta_model_quadratic <- brm(
+  formula = stage2_theta_formula_quadratic,
+  data = child_data_cleaned,
+  family = gaussian(),
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sd)
+  ),
+  save_pars = save_pars(all = TRUE),
+  backend = "cmdstanr",
+  chains = 4,
+  iter = 2000,
+  cores = 4,
+  seed = 123
+)
+
+saveRDS(stage2_theta_model_quadratic, here("models", "bilingual_hirt_stage2_model_quadratic.rds"))
+```
+
+```{r eval=params$refit}
+stage2_theta_formula_cubic <- bf(
+  theta_est | mi(theta_se) ~ age_c * poly(exp_c, 3) + 
+    (1 | child_id) + (age_c * poly(exp_c, 3) | dataset_name * language)
+)
+
+stage2_theta_model_cubic <- brm(
+  formula = stage2_theta_formula_cubic,
+  data = child_data_cleaned,
+  family = gaussian(),
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sd)
+  ),
+  save_pars = save_pars(all = TRUE),
+  backend = "cmdstanr",
+  chains = 4,
+  iter = 2000,
+  cores = 4,
+  seed = 123
+)
+
+saveRDS(stage2_theta_model_cubic, here("models", "bilingual_hirt_stage2_model_cubic.rds"))
+```
+
+```{r eval=params$refit}
+stage2_theta_formula_exp <- bf(
+  theta_est | mi(theta_se) ~ age_c * exp_exp_c + 
+    (1 | child_id) + (age_c * exp_exp_c | dataset_name * language)
+)
+
+stage2_theta_model_exp <- brm(
+  formula = stage2_theta_formula_exp,
+  data = child_data_cleaned |> 
+    mutate(exp_exp_c = scale(exp(exposure_proportion), scale = F)),
+  family = gaussian(),
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sd)
+  ),
+  save_pars = save_pars(all = TRUE),
+  backend = "cmdstanr",
+  chains = 4,
+  iter = 2000,
+  cores = 4,
+  seed = 123
+)
+
+saveRDS(stage2_theta_model_exp, here("models", "bilingual_hirt_stage2_model_exp.rds"))
+```
+
+```{r eval=params$refit}
+stage2_theta_formula_log <- bf(
+  theta_est | mi(theta_se) ~ age_c * log_exp_c + 
+    (1 | child_id) + (age_c * log_exp_c | dataset_name * language)
+)
+
+stage2_theta_model_log <- brm(
+  formula = stage2_theta_formula_log,
+  data = child_data_cleaned |> 
+    mutate(log_exp_c = scale(log(exposure_proportion + .01), scale = F)),
+  family = gaussian(),
+  prior = c(
+    prior(normal(0, 1), class = Intercept),
+    prior(normal(0, 1), class = b),
+    prior(exponential(1), class = sd)
+  ),
+  save_pars = save_pars(all = TRUE),
+  backend = "cmdstanr",
+  chains = 4,
+  iter = 2000,
+  cores = 4,
+  seed = 123
+)
+
+saveRDS(stage2_theta_model_log, here("models", "bilingual_hirt_stage2_model_log.rds"))
+```
+
+```{r eval=params$refit}
+stage2_theta_formula_pw <- bf(
+  theta_est | mi(theta_se) ~ b0 + b1 * age_c +
+    b2 * (exp_c - omega) * step(omega - exp_c) +
+    b3 * (exp_c - omega) * step(exp_c - omega) +
+    b4 * age_c * (exp_c - omega) * step(omega - exp_c) +
+    b5 * age_c * (exp_c - omega) * step(exp_c - omega),
+    # b2 * pmin(exp_c - omega, 0) +
+    # b3 * pmax(exp_c - omega, 0) +
+    # b4 * age_c * pmin(exp_c - omega, 0) +
+    # b5 * age_c * pmax(exp_c - omega, 0),
+  b0 ~ 1 + (1 | child_id),
+  b1 + b2 + b3 + b4 + b5 + alpha ~ 1 + (1 | dataset_name * language),
+  nlf(omega ~ inv_logit(alpha) - 0.553),
+  nl = TRUE
+)
+
+stage2_theta_model_pw <- brm(
+  formula = stage2_theta_formula_pw,
+  data = child_data_cleaned,
+  family = gaussian(),
+  prior = c(
+    prior(normal(0, 1), nlpar = "b0"),
+    prior(normal(0, 1), nlpar = "b1"),
+    prior(normal(0, 1), nlpar = "b2"),
+    prior(normal(0, 1), nlpar = "b3"),
+    prior(normal(0, 1), nlpar = "b4"),
+    prior(normal(0, 1), nlpar = "b5"),
+
+    prior(normal(0, 1), nlpar = "alpha"),
+
+    prior(exponential(1), class = sd, nlpar = "b0"),
+    prior(exponential(1), class = sd, nlpar = "b1"),
+    prior(exponential(1), class = sd, nlpar = "b2"),
+    prior(exponential(1), class = sd, nlpar = "b3"),
+    prior(exponential(1), class = sd, nlpar = "b4"),
+    prior(exponential(1), class = sd, nlpar = "b5"),
+    prior(exponential(1), class = sd, nlpar = "alpha"),
+
+    prior(exponential(1), class = sigma)
+  ),
+  save_pars = save_pars(all = TRUE),
+  backend = "cmdstanr",
+  chains = 4,
+  iter = 2000,
+  cores = 4,
+  seed = 123
+)
+
+saveRDS(stage2_theta_model_pw, here("models", "bilingual_hirt_stage2_model_pw.rds"))
+```
+
+# Model comparison
+```{r}
+stage2_theta_model_linear <- readRDS(here("models", "bilingual_hirt_stage2_model_linear.rds"))
+stage2_theta_model_quadratic <- readRDS(here("models", "bilingual_hirt_stage2_model_quadratic.rds"))
+stage2_theta_model_cubic <- readRDS(here("models", "bilingual_hirt_stage2_model_cubic.rds"))
+stage2_theta_model_exp <- readRDS(here("models", "bilingual_hirt_stage2_model_exp.rds"))
+stage2_theta_model_log <- readRDS(here("models", "bilingual_hirt_stage2_model_log.rds"))
+stage2_theta_model_pw <- readRDS(here("models", "bilingual_hirt_stage2_model_pw.rds"))
+
+loos <- list(
+  linear = loo(stage2_theta_model_linear),
+  quadratic = loo(stage2_theta_model_quadratic),
+  cubic = loo(stage2_theta_model_cubic),
+  exp = loo(stage2_theta_model_exp),
+  log = loo(stage2_theta_model_log),
+  pw = loo(stage2_theta_model_pw)
+)
+
+loo_compare(loos)
+```
+
+# Predictions
+```{r}
+cov_grid <- expand_grid(
+  age = 9:48,
+  exposure_proportion = seq(0, 1, 0.05),
+  language = child_data$language |> unique()) |> 
+  mutate(age_c = age - mean(child_data_cleaned$age),
+         exp_c = exposure_proportion - mean(child_data_cleaned$exposure_proportion))
+```
+
+```{r}
+preds_brm_log <- cov_grid |> 
+  mutate(log_exp_c = scale(log(exposure_proportion + .01), scale = F),
+         theta_pred = predict(
+           stage2_theta_model_log,
+           cov_grid |> mutate(log_exp_c = scale(log(exposure_proportion + .01), scale = F),
+                              theta_se = median(child_data_cleaned$theta_se)),
+           re_formula = ~ (age_c * log_exp_c | language)))
+
+preds_brm_log |> 
+  filter(age %in% c(9, 12, 15, 18, 21, 24, 27, 30, 33, 36)) |> 
+  ggplot(aes(x = exposure_proportion, y = theta_pred[,"Estimate"], col = age)) +
+  geom_line(aes(group = age)) +
+  facet_wrap(~language) +
+  theme(legend.position = "none") +
+  labs(x = "Exposure proportion", y = "Ability score estimate")
+```
+
+```{r}
+preds_brm_lin <- cov_grid |> 
+  mutate(theta_pred = predict(
+    stage2_theta_model_linear,
+    cov_grid |> mutate(theta_se = median(child_data_cleaned$theta_se)),
+    re_formula = ~ (age_c * exp_c | language)))
+
+preds_brm_lin |> 
+  filter(age %in% c(9, 12, 15, 18, 21, 24, 27, 30, 33, 36)) |> 
+  ggplot(aes(x = exposure_proportion, y = theta_pred[,"Estimate"], col = age)) +
+  geom_line(aes(group = age)) +
+  facet_wrap(~language) +
+  theme(legend.position = "none") +
+  labs(x = "Exposure proportion", y = "Ability score estimate")
+```
+
+# Prediction difference
+```{r}
+pred_log <- predict(stage2_theta_model_log) |> as_tibble()
+pred_lin <- predict(stage2_theta_model_linear) |> as_tibble()
+
+child_data_preds <- child_data_cleaned |> 
+  mutate(`pred_log` = pred_log$Estimate,
+         `pred_lin` = pred_lin$Estimate,
+         abs_dev = abs(pred_log - pred_lin))
+
+child_data_preds |> 
+  ggplot(aes(x = pred_lin, y = pred_log)) +
+  geom_abline(intercept = 0, slope = 1, lty = "dashed", col = "grey54") +
+  geom_point(alpha = .01) +
+  labs(x = "Linear estimates", y = "Log estimates")
+
+child_data_preds |> 
+  ggplot(aes(x = abs_dev)) +
+  geom_histogram(aes(fill = language)) +
+  geom_vline(xintercept = mean(child_data_preds$abs_dev), lty = "dashed", col = "black") +
+  geom_vline(xintercept = median(child_data_preds$abs_dev), lty = "dotted", col = "black") +
+  labs(x = "Absolute deviation", y = "Count") +
+  annotate("label", x = median(child_data_preds$abs_dev) + .01, y = 5200, 
+           label = glue("median = {round(median(child_data_preds$abs_dev),3)}"), hjust = 0) +
+  annotate("label", x = mean(child_data_preds$abs_dev) + .01, y = 4800, 
+           label = glue("mean = {round(mean(child_data_preds$abs_dev),3)}"), hjust = 0) +
+  theme(legend.position = "none")
+```
+
+# Back-projection
+```{r}
+calc_prob_2pl <- function(theta, logalpha, beta) {
+  plogis(exp(logalpha) * (theta + beta))
+}
+
+item_est <- read_csv(here("data", "item_est.csv"))
+
+preds_items <- preds_brm_lin |> 
+  left_join(item_est, by = join_by(language),
+            relationship = "many-to-many") |> 
+  # filter(uid %in% (df_data |> filter(form != "WG") |> pull(uid))) |> 
+  mutate(prob = pmap_dbl(list(theta_pred[,"Estimate"], logalpha_est, beta_est),
+                         calc_prob_2pl))
+```
+
+```{r}
+preds_sum <- preds_items |> 
+  group_by(age, exposure_proportion, language) |> 
+  summarise(n_items = n(),
+            vocab = sum(prob),
+            .groups = "drop")
+```
+
+```{r}
+p_preds <- preds_sum |> 
+  mutate(prop = vocab / n_items) |> 
+  filter(exposure_proportion %in% c(.10, .25, .50, .75, .90)) |> 
+  mutate(exposure_proportion = factor(exposure_proportion)) |> 
+  # filter(age <= 36) |> 
+  ggplot(aes(x = age, y = prop, col = exposure_proportion)) +
+  geom_line(aes(group = exposure_proportion)) +
+  facet_wrap(. ~ language) +
+  labs(x = "Age", y = "Proportion of words produced", col = "Exposure proportion")
+
+p_preds
+```
+

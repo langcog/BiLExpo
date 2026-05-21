@@ -1,0 +1,236 @@
+---
+title: "IRT model"
+format: html
+params:
+  refit: true
+---
+
+# Setup
+```{r, include=F}
+library(glue)
+library(here)
+library(brms)
+library(rstanarm)
+library(cmdstanr)
+library(patchwork)
+library(tidyverse)
+
+theme_set(theme_bw() +
+            theme(
+              panel.grid.minor = element_blank(),
+              panel.grid.major = element_blank(),
+              strip.background = element_blank(),
+              legend.position = "bottom"
+            ))
+```
+
+```{r}
+bilingual_item_data_clean <- readRDS(here("data", "items.rds"))
+```
+
+# Data prep
+```{r}
+f_instruments <- list.files(here("instruments"))
+all_instruments <- map(f_instruments, \(f) {
+  read_csv(here("instruments", f), show_col_types = FALSE) |> 
+    mutate(uid = glue("item_{row_number()}")) |> 
+    pivot_longer(
+      cols = -c(category, definition, gloss, uni_lemma, uid),
+      names_to = "form",
+      values_to = "item_id"
+    ) |> 
+    mutate(language = str_remove(f, ".csv"),
+           uid = glue("{language}_{uid}"))
+}) |> list_rbind() |> 
+  filter(!is.na(item_id)) |> 
+  mutate(form = case_when(
+    form == "OxfordExtended" ~ "Oxford Extended",
+    form == "OxfordShortII" ~ "Oxford Short II",
+    form == "WSExtended" ~ "WS Extended",
+    form == "WGShort" ~ "WG Short",
+    .default = form
+  ))
+```
+
+```{r}
+df_data <- bilingual_item_data_clean |> 
+  rename(unilemma = uni_lemma) |> 
+  filter(item_kind == "word",
+         language != "Other Langs") |> 
+  left_join(all_instruments |> select(language, form, item_id, uid),
+            by = join_by(language, form, item_id)) |> 
+  mutate(uid = coalesce(uid, glue("{language}_{item_id}")),
+         value = as.numeric(produces),
+         age_sc = scale(age)[,1]) |> 
+  filter(!is.na(value))
+```
+
+# Stage 1 model
+```{r eval=params$refit}
+stage1_formula <- bf(
+  value ~ exp(logalpha) * (theta + beta),
+  theta ~ 0 + (1 | data_id),
+  beta ~ 0 + (1 |i| uid),
+  logalpha ~ 1 + (1 |i| uid),
+  nl = TRUE
+)
+
+stage1_priors <- c(
+  prior(normal(0, 1), class = "b", nlpar = "logalpha"),
+  prior(normal(0, 1), class = "sd", nlpar = "theta"),
+  prior(normal(0, 1), class = "sd", nlpar = "beta"), 
+  prior(normal(0, 1), class = "sd", nlpar = "logalpha")
+)
+
+stage1_model <- brm(
+  formula = stage1_formula,
+  data = df_data,
+  family = bernoulli(link = "logit"),
+  prior = stage1_priors,
+  # chains = 4,
+  # iter = 2000,
+  # cores = 4,
+  algorithm = "meanfield",
+  iter = 10000,
+  tol_rel_obj = 1e-4,
+  backend = "cmdstanr",
+  threads = threading(2),
+  seed = 123
+)
+
+saveRDS(stage1_model, here("models", "bilingual_hirt_stage1_model.rds"))
+```
+
+```{r}
+stage1_model <- readRDS(here("models", "bilingual_hirt_stage1_model.rds"))
+
+summary(stage1_model)
+```
+
+# Parameter extraction
+```{r}
+theta_ranef <- ranef(stage1_model, summary = TRUE)$data_id[, , "theta_Intercept"]
+theta_fixed <- 0 # fixef(stage1_model, summary = TRUE, nlpar = "theta")[1, "Estimate"]
+theta_estimates <- tibble(
+  data_id = rownames(theta_ranef),
+  theta_est = theta_fixed + theta_ranef[, "Estimate"],
+  theta_se = theta_ranef[, "Est.Error"]
+)
+
+beta_ranef <- ranef(stage1_model, summary = TRUE)$uid[, , "beta_Intercept"]
+beta_fixed <- 0 # fixef(stage1_model, summary = TRUE)[1, "Estimate"]
+beta_estimates <- tibble(
+  uid = rownames(beta_ranef),
+  beta_est = beta_fixed + beta_ranef[, "Estimate"],
+  beta_se = beta_ranef[, "Est.Error"]
+)
+
+logalpha_ranef <- ranef(stage1_model, summary = TRUE)$uid[, , "logalpha_Intercept"]
+logalpha_fixed <- fixef(stage1_model, summary = TRUE)[1, "Estimate"]
+logalpha_estimates <- tibble(
+  uid = rownames(logalpha_ranef),
+  logalpha_est = logalpha_fixed + logalpha_ranef[, "Estimate"],
+  logalpha_se = logalpha_ranef[, "Est.Error"]
+)
+
+item_est <- beta_estimates |> 
+  left_join(logalpha_estimates, by = join_by(uid)) |> 
+  mutate(language = str_remove(uid, "_.*"))
+
+write_csv(item_est, here("data", "item_est.csv"))
+```
+
+```{r}
+p_beta <- beta_estimates |> 
+  mutate(language = str_remove(uid, "_.*")) |> 
+  ggplot(aes(x = -beta_est, fill = language)) +
+  geom_density(alpha = .1) +
+  labs(x = "Difficulty", y = "Density", fill = "Language")
+
+p_alpha <- logalpha_estimates |> 
+  mutate(language = str_remove(uid, "_.*")) |> 
+  ggplot(aes(x = exp(logalpha_est), fill = language)) +
+  geom_density(alpha = .1) +
+  labs(x = "Discrimination", y = "Density", fill = "Language")
+
+(p_alpha | p_beta) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "none")
+```
+
+```{r}
+df_demogs <- readRDS(here("data", "demographics.rds"))
+
+df_sumscores <- df_data |> 
+  group_by(data_id) |> 
+  summarise(sumscore = sum(produces),
+            .groups = "drop") |> 
+  mutate(data_id = as.character(data_id))
+
+child_data <- df_demogs |>
+  left_join(bilingual_item_data_clean |> select(data_id, language) |> distinct(),
+            by = join_by(data_id)) |>
+  mutate(age_sc = scale(age)[,1]) |>
+  select(data_id, child_id, age_sc, dataset_name, language, age, languages) |>
+  mutate(data_id = as.character(data_id),
+         child_id = as.character(child_id)) |> 
+  filter(map_dbl(languages, nrow) > 0) |> 
+  unnest(languages) |>
+  filter(!is.na(exposure_language),
+         !is.na(exposure_proportion)) |>
+  select(-age_first_exposed) |> 
+  filter(str_detect(language, glue("^{exposure_language}")) |
+           exposure_language == "Chinese" & str_detect(language, "^Mandarin")) |> 
+  mutate(exp_sc = scale(log1p(exposure_proportion / 100))[,1]) |> 
+  left_join(theta_estimates, by = join_by(data_id)) |> 
+  filter(exposure_proportion <= 100) |> 
+  left_join(df_sumscores, by = join_by(data_id))
+
+saveRDS(child_data, here("data", "bilingual_hirt_stage2_data.rds"))
+```
+
+```{r}
+p_lang <- child_data |> 
+  ggplot(aes(y = theta_est, fill = language)) +
+  geom_density(alpha = .2) +
+  labs(y = "Theta", x = "Density") +
+  theme(legend.position = "none")
+
+p_age <- child_data |> 
+  ggplot(aes(x = age, y = theta_est, col = language)) +
+  geom_point(alpha = .05) +
+  labs(x = "Age (months)", y = "Theta", col = "Language") +
+  theme(legend.position = "none")
+
+p_exp <- child_data |> 
+  ggplot(aes(x = exposure_proportion, y = theta_est, col = language)) +
+  geom_point(alpha = .05) +
+  labs(x = "Exposure proportion", y = "Theta", col = "Language") +
+  theme(legend.position = "none")
+
+(p_lang + p_age + p_exp) +
+  plot_layout(axes = "collect_y")
+```
+
+```{r}
+p_ages <- child_data |> 
+  ggplot(aes(x = age)) +
+  geom_histogram(fill = "#fcba03") +
+  facet_wrap(. ~ language, ncol = 4, scales = "free_y") +
+  labs(x = "Age")
+
+p_exps <- child_data |> 
+  ggplot(aes(x = exposure_proportion)) +
+  geom_histogram(fill = "#0377fc") +
+  facet_wrap(. ~ language, ncol = 4, scales = "free_y") +
+  labs(x = "Exposure proportion")
+
+(p_ages + p_exps)
+```
+
+```{r}
+child_data |> 
+  ggplot(aes(x = age, y = exposure_proportion)) +
+  geom_point(alpha = .1)
+```
+
