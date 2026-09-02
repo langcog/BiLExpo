@@ -1,0 +1,156 @@
+---
+title: "O5 Dimensionality — Bayesian crossed random-effects IRT"
+format: html
+params:
+  language_a: "English (American)"
+  language_b: "Spanish (Mexican)"
+  min_items_per_child: 20
+  fit_models: false
+  method: "sample"        # "sample" (NUTS) or "pathfinder"
+  link_concepts: true     # FALSE -> every item its own concept (robustness check)
+---
+
+# Idea
+
+Rather than let differential exposure masquerade as a factor (as an exploratory
+mIRT would), model it, and turn the dimensionality question into a
+**variance-components** question:
+
+- item easiness = translation-equivalent **concept** term (shared by `dog` /
+  `perro` via `uni_lemma`) + **language-specific offset**;
+- child ability `theta_child[i, L] = lambda_g * theta_g[i] + theta_s[i, L]`,
+  `theta_g ~ N(0,1)`, `theta_s[,L] ~ N(0, sigma_s[L])`;
+- exposure + age enter as fixed per-language effects.
+
+Then
+
+- `sigma_s -> 0`  ⇒ unidimensional  (`rho -> 1`)
+- `lambda_g -> 0` ⇒ two independent lexicons (`rho -> 0`)
+- both free       ⇒ estimate `rho` and `ECV` directly — a **continuous** answer.
+
+`models/bilingual_dim_irt.stan` implements all three via the data flags
+`estimate_general` / `estimate_specific` (it is a crossed random-effects
+generalisation of the old concept/word IRT in `archive/models/model1.stan`).
+
+```{r setup, include=FALSE}
+library(glue)
+library(here)
+library(cmdstanr)
+library(posterior)
+library(loo)
+library(tidyverse)
+
+source(here("scripts", "dim_irt_helpers.R"))
+
+theme_set(
+  theme_bw() +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank(),
+          strip.background = element_blank(),
+          legend.position = "bottom")
+)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+# Data prep (shares helpers with `08_o5_dimensionality_mirt.qmd`)
+
+```{r}
+langs <- c(params$language_a, params$language_b)
+
+item_table <- build_item_table(
+  items       = readRDS(here("data", "items.rds")),
+  instruments = load_instruments(here("instruments"))
+)
+df_demogs <- readRDS(here("data", "demographics.rds"))
+
+pair <- build_pair_matrix(
+  item_table, df_demogs, langs,
+  min_items_per_child = params$min_items_per_child
+)
+
+# long form the Stan model wants: one row per (child, item)
+obs <- wide_to_long_obs(pair$resp, pair$item_lookup, pair$covdata)
+if (!params$link_concepts) obs <- obs |> mutate(unilemma = NA_character_)
+
+exposure <- child_language_exposure(df_demogs, langs)
+
+prep <- build_dim_irt_stan_data(
+  obs, exposure, langs,
+  estimate_general = 1L, estimate_specific = 1L, compute_loglik = 1L
+)
+str(prep$data[c("N", "I", "J", "C")])
+```
+
+# Fit the three nested variants
+
+```{r fit, eval=params$fit_models}
+mod <- cmdstan_model(here("models", "bilingual_dim_irt.stan"))
+
+run_variant <- function(g, s, tag) {
+  d <- modifyList(prep$data, list(estimate_general = g, estimate_specific = s))
+  fit <- if (params$method == "pathfinder") {
+    mod$pathfinder(data = d, seed = 123, draws = 2000, num_paths = 8)
+  } else {
+    mod$sample(data = d, seed = 123, chains = 4, parallel_chains = 4,
+               iter_warmup = 750, iter_sampling = 750, adapt_delta = 0.95)
+  }
+  fit$save_object(here("models", glue("o5_bayes_{tag}_{make.names(params$language_a)}.rds")))
+  fit
+}
+
+fit_full <- run_variant(1, 1, "full")      # general + specific
+fit_uni  <- run_variant(1, 0, "unidim")    # sigma_s == 0
+fit_two  <- run_variant(0, 1, "twolex")    # lambda_g == 0
+```
+
+```{r}
+rd <- \(tag) readRDS(here("models", glue("o5_bayes_{tag}_{make.names(params$language_a)}.rds")))
+fit_full <- rd("full"); fit_uni <- rd("unidim"); fit_two <- rd("twolex")
+```
+
+# The answer, read straight off the full model
+
+```{r}
+fit_full$summary(c("lambda_g", "sigma_s", "rho", "ecv",
+                   "beta_exp", "beta_age", "sigma_concept", "sigma_delta"))
+
+as_draws_df(fit_full$draws(c("rho", "ecv"))) |>
+  pivot_longer(c(rho, ecv)) |>
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 60) +
+  facet_wrap(~name, scales = "free") +
+  labs(x = NULL, y = NULL,
+       title = "Posterior: correlation of the two language abilities, and person-level ECV")
+```
+
+- `rho` near 1 and `ecv` near 1 ⇒ **unidimensional**: one general trait,
+  languages differ only by exposure-driven level.
+- `rho` clearly below ~.7, `sigma_s` away from 0 ⇒ **separable lexicons**.
+- Intermediate `ecv` (~.6–.85) ⇒ strong common trait **plus** non-trivial
+  language-specific ability — report the number, don't binarise.
+
+# Model comparison (LOO), as a cross-check
+
+```{r}
+loo_compare(list(
+  full   = fit_full$loo(),
+  unidim = fit_uni$loo(),
+  twolex = fit_two$loo()
+))
+```
+
+If `unidim` is within ~2 SE of `full`, the language-specific factors aren't
+earning their keep. If `full` clearly beats both, general + specific is the right
+description.
+
+# Robustness
+
+- **Age.** Re-fit within 6-month age bands (drop `beta_age*`), confirm
+  `rho` / `ecv` are stable.
+- **Concept linking.** Compare to `link_concepts: false` — if `rho` drops a lot,
+  translation-equivalent structure is doing real work (conceptual vs lexical
+  representation).
+- **NUTS vs Pathfinder.** Iterate with `method: "pathfinder"` but report the NUTS
+  fit — VI understates `sigma_s` uncertainty, the parameter in question.
+- Feed `theta_child[,1]` / `theta_child[,2]` into `02_exposure_models.qmd` as a
+  consistency check against the two-stage pipeline.

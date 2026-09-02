@@ -1,0 +1,293 @@
+---
+title: "O5 Dimensionality — simulation calibration"
+format: html
+params:
+  language_a: "English (American)"
+  language_b: "Spanish (Mexican)"
+  min_items_per_child: 20
+  n_rep: 100
+  dev_sd: 0.6            # SD of the structure-controlled ability deviation
+  run_sim: false
+  run_bayes_sbc: false
+---
+
+# Why this file exists
+
+`08_o5_dimensionality_mirt.qmd` and `09_o5_dimensionality_bayes.qmd` each return
+*some* estimate of `cor(F_A, F_B)`, `ECV`, and a preferred model. Before believing
+any of it:
+
+1. **False-positive multidimensionality.** If the truth is a single latent trait,
+   how often does the pipeline nonetheless prefer ≥2 factors — from
+   exposure-driven sparsity, the CDI age range, and the binary-item
+   difficulty-factor artifact? What do `cor(F_A,F_B)` / `ECV` look like when the
+   true value is 1?
+2. **Power & bias.** If the truth *is* two partly-separable lexicons (`rho < 1`)
+   or a bifactor structure (`ECV < 1`), can we detect it, and is the estimate
+   biased?
+
+We simulate responses from **known** structures, reusing the **real** item
+parameters (`data/item_est.csv`), the **real** child age/exposure values, and the
+**real** form design (which items each child saw), then run the exact pipeline
+from file 08.
+
+```{r setup, include=FALSE}
+library(glue)
+library(here)
+library(mirt)
+library(splines)
+library(furrr)
+library(tidyverse)
+
+source(here("scripts", "dim_irt_helpers.R"))
+
+theme_set(
+  theme_bw() +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank(),
+          strip.background = element_blank(),
+          legend.position = "bottom")
+)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+# Ingredients
+
+```{r}
+langs <- c(params$language_a, params$language_b)
+
+item_table <- build_item_table(
+  items       = readRDS(here("data", "items.rds")),
+  instruments = load_instruments(here("instruments"))
+)
+df_demogs  <- readRDS(here("data", "demographics.rds"))
+item_est   <- read_csv(here("data", "item_est.csv"), show_col_types = FALSE)
+child_data <- readRDS(here("data", "bilingual_hirt_stage2_data.rds"))
+
+# real design: children in both languages, real form (NA pattern), real covariates
+pair <- build_pair_matrix(item_table, df_demogs, langs,
+                          min_items_per_child = params$min_items_per_child)
+
+# item params aligned to the columns of pair$resp; drop items with no estimate
+ipar <- tibble(uid = colnames(pair$resp)) |>
+  left_join(item_est |> select(uid, a = logalpha_est, b = beta_est), by = "uid") |>
+  mutate(a = exp(coalesce(a, 0)), b = coalesce(b, mean(b, na.rm = TRUE)))
+
+# real per-language ability level per child (sets the age-driven mean + scale)
+mu_tbl <- child_data |>
+  filter(language %in% langs) |>
+  transmute(child_id = as.character(child_id), language, theta_real = theta_est) |>
+  pivot_wider(names_from = language, values_from = theta_real) |>
+  rename(mu_a = !!langs[1], mu_b = !!langs[2])
+
+design <- tibble(child_id = rownames(pair$resp)) |>
+  left_join(mu_tbl, by = "child_id") |>
+  left_join(pair$covdata |> select(child_id, exp_a_c), by = "child_id") |>
+  mutate(mu_a = coalesce(mu_a, mean(mu_a, na.rm = TRUE)),
+         mu_b = coalesce(mu_b, mean(mu_b, na.rm = TRUE)))
+
+is_a <- pair$item_lookup$language == langs[1]
+col_lang <- pair$item_lookup$language
+```
+
+# Generative model
+
+`produces ~ Bernoulli(inv_logit(a_j * (theta_child[i, L(j)] + b_j)))` on the cells
+the real child actually saw. `theta_child[i, L] = mu_i,L + dev[i, L]`, where
+`mu_i,L` is the child's real per-language ability level (carries age + real
+exposure) and `dev` is the mean-zero, SD-`dev_sd` piece whose structure we
+control:
+
+| `structure` | `dev` | truth |
+|-------------|-------|-------|
+| `unidim`     | `dev[,1] = dev[,2] = z_g` | `rho = 1`, `ECV = 1` |
+| `twolexicon` | `MVN(0, [[1, rho], [rho, 1]]) * dev_sd` | given `rho` |
+| `bifactor`   | `sqrt(ECV)*z_g + sqrt(1-ECV)*z_s`, scaled | given `ECV` |
+
+```{r}
+simulate_rep <- function(structure, rho = 1, ecv = 1, seed = 1) {
+  set.seed(seed)
+  n <- nrow(pair$resp); s <- params$dev_sd
+
+  dev <- switch(structure,
+    unidim = { g <- rnorm(n); cbind(g, g) * s },
+    twolexicon = {
+      MASS::mvrnorm(n, c(0, 0), matrix(c(1, rho, rho, 1), 2)) * s
+    },
+    bifactor = {
+      g <- rnorm(n); z <- cbind(rnorm(n), rnorm(n))
+      (sqrt(ecv) * cbind(g, g) + sqrt(1 - ecv) * z) * s
+    },
+    stop("unknown structure")
+  )
+
+  abil_a <- design$mu_a + dev[, 1]
+  abil_b <- design$mu_b + dev[, 2]
+  abil   <- ifelse(matrix(is_a, nrow = n, ncol = length(is_a), byrow = TRUE),
+                   abil_a, abil_b)              # n x J, ability for each cell
+
+  eta <- sweep(abil, 2, ipar$b, `+`)
+  eta <- sweep(eta, 2, ipar$a, `*`)
+  P   <- plogis(eta)
+  y   <- matrix(rbinom(length(P), 1, P), nrow = n, dimnames = dimnames(pair$resp))
+  y[is.na(pair$resp)] <- NA                     # keep the real form design
+  y
+}
+```
+
+# Pipeline under test (mirror of file 08: M0 vs M1)
+
+```{r}
+analyse_rep <- function(y, truth) {
+  # drop items that came out near-constant in this replicate
+  ok <- apply(y, 2, \(x) { p <- mean(x, na.rm = TRUE)
+                           sum(!is.na(x)) >= 50 && p > .02 && p < .98 })
+  y  <- y[, ok, drop = FALSE]
+  isa <- (col_lang[ok] == params$language_a)
+  J   <- ncol(y)
+  cov <- as.data.frame(pair$covdata[, c("age_c", "exp_a_c")])
+
+  spec_M0 <- mirt.model(glue("F = 1-{J}"))
+  spec_M1 <- mirt.model(glue(
+    "FA = {paste(which(isa),  collapse = ',')}\n",
+    "FB = {paste(which(!isa), collapse = ',')}\nCOV = FA*FB"))
+
+  M0 <- mirt(y, spec_M0, itemtype = "2PL", covdata = cov,
+             formula = ~ ns(age_c, 3), verbose = FALSE)
+  M1 <- mirt(y, spec_M1, itemtype = "2PL", method = "QMCEM", covdata = cov,
+             formula = list(FA = ~ ns(age_c, 3) + exp_a_c,
+                            FB = ~ ns(age_c, 3) + exp_a_c), verbose = FALSE)
+
+  cor_ab <- cov2cor(coef(M1, simplify = TRUE)$cov)["FA", "FB"]
+  lr <- anova(M0, M1)
+
+  tibble(
+    structure  = truth$structure,
+    rho_true   = truth$rho,
+    ecv_true   = truth$ecv,
+    cor_ab_hat = cor_ab,
+    lr_p       = lr$p[2],
+    prefer_2f  = lr$p[2] < 0.05 &&
+                 extract.mirt(M1, "BIC") < extract.mirt(M0, "BIC")
+  )
+}
+```
+
+# Run the grid
+
+```{r sim, eval=params$run_sim}
+plan(multisession, workers = max(1, availableCores() - 1))
+
+grid <- bind_rows(
+  tibble(structure = "unidim",     rho = 1,             ecv = 1),
+  tibble(structure = "twolexicon", rho = c(.3, .6, .9), ecv = NA_real_),
+  tibble(structure = "bifactor",   rho = NA_real_,      ecv = c(.5, .7, .9))
+) |>
+  crossing(rep = seq_len(params$n_rep)) |>
+  mutate(seed = row_number() + 1000)
+
+results <- future_pmap_dfr(grid, function(structure, rho, ecv, rep, seed) {
+  y <- simulate_rep(structure, rho = coalesce(rho, 1),
+                    ecv = coalesce(ecv, 1), seed = seed)
+  analyse_rep(y, list(structure = structure, rho = rho, ecv = ecv))
+}, .options = furrr_options(seed = TRUE))
+
+saveRDS(results, here("models", glue("o5_calibration_{make.names(params$language_a)}.rds")))
+```
+
+```{r}
+results <- readRDS(here("models", glue("o5_calibration_{make.names(params$language_a)}.rds")))
+```
+
+# 1. False-positive multidimensionality (truth = unidimensional)
+
+```{r}
+results |>
+  filter(structure == "unidim") |>
+  summarise(
+    p_prefer_2factor   = mean(prefer_2f),
+    cor_ab_hat_median  = median(cor_ab_hat),        # should be ~1
+    cor_ab_hat_q05     = quantile(cor_ab_hat, .05),
+    cor_ab_hat_q95     = quantile(cor_ab_hat, .95)
+  )
+```
+
+This is the **null calibration** of the whole pipeline. If `p_prefer_2factor` is,
+say, 0.30, a "2-factor wins" result on real data is not evidence of
+multidimensionality on its own, and the real-data `cor_ab_hat` must be compared
+against the `[q05, q95]` null band — not against 1.0.
+
+# 2. Power and bias (truth = separable / bifactor)
+
+```{r}
+results |>
+  filter(structure != "unidim") |>
+  group_by(structure, rho_true, ecv_true) |>
+  summarise(
+    power_detect   = mean(prefer_2f),
+    cor_ab_hat_mean = mean(cor_ab_hat),
+    cor_ab_hat_bias = mean(cor_ab_hat - rho_true),   # NA for bifactor rows
+    .groups = "drop"
+  )
+```
+
+```{r}
+results |>
+  filter(structure == "twolexicon") |>
+  ggplot(aes(x = factor(rho_true), y = cor_ab_hat)) +
+  geom_hline(aes(yintercept = rho_true), lty = "dashed", col = "grey50") +
+  geom_violin(fill = "grey85") +
+  geom_boxplot(width = .15, outlier.shape = NA) +
+  labs(x = "True correlation between language lexicons",
+       y = expression(widehat(cor)(F[A], F[B])),
+       title = "Calibration of the estimated language-ability correlation")
+```
+
+# 3. (Optional) SBC-lite for the Bayesian model
+
+Fit `models/bilingual_dim_irt.stan` (full variant) to a few simulated data sets
+per structure; check the `rho` / `sigma_s` posteriors are calibrated — under
+`unidim` truth `sigma_s` should pile up near 0 and `rho`'s 90% interval should
+cover 1; under `twolexicon` truth `rho`'s interval should cover the truth at
+~nominal rate.
+
+```{r bayes_sbc, eval=params$run_bayes_sbc}
+library(cmdstanr)
+mod <- cmdstan_model(here("models", "bilingual_dim_irt.stan"))
+exposure <- child_language_exposure(df_demogs, langs)
+
+sbc_one <- function(structure, rho = 1, ecv = 1, seed = 1) {
+  y   <- simulate_rep(structure, rho = rho, ecv = ecv, seed = seed)
+  obs <- wide_to_long_obs(y, pair$item_lookup, pair$covdata)
+  prep <- build_dim_irt_stan_data(obs, exposure, langs,
+                                  estimate_general = 1L, estimate_specific = 1L,
+                                  compute_loglik = 0L)
+  fit <- mod$sample(data = prep$data, chains = 2, parallel_chains = 2,
+                    iter_warmup = 500, iter_sampling = 500, seed = seed,
+                    refresh = 0)
+  d <- posterior::as_draws_df(fit$draws(c("rho", "ecv", "sigma_s[1]", "sigma_s[2]")))
+  tibble(structure, rho_true = rho, ecv_true = ecv,
+         rho_med   = median(d$rho),
+         rho_cover = quantile(d$rho, .05) <= rho & rho <= quantile(d$rho, .95),
+         sigma_s1_med = median(d$`sigma_s[1]`))
+}
+
+sbc_res <- bind_rows(
+  map_dfr(1:8,  \(i) sbc_one("unidim", seed = i)),
+  map_dfr(1:8,  \(i) sbc_one("twolexicon", rho = .6, seed = 100 + i))
+)
+sbc_res |>
+  group_by(structure) |>
+  summarise(rho_med = mean(rho_med), rho_coverage = mean(rho_cover),
+            sigma_s1_med = mean(sigma_s1_med), .groups = "drop")
+```
+
+# What to conclude
+
+- Report the real-data `cor(F_A,F_B)` / `ECV` / preferred-model result **next to**
+  its null calibration (section 1) and its power (section 2).
+- Real-data estimate inside the unidimensional-null band ⇒ "consistent with a
+  single general lexical-ability dimension, language differences attributable to
+  exposure".
+- Outside the null band **and** section 2 shows power at that effect size ⇒ a
+  defensible multidimensionality claim, quantified by `ECV`, not asserted.

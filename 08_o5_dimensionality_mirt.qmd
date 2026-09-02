@@ -1,0 +1,266 @@
+---
+title: "O5 Dimensionality of bilingual lexical ability — confirmatory mIRT"
+format: html
+params:
+  language_a: "English (American)"
+  language_b: "Spanish (Mexican)"
+  min_items_per_child: 20
+  thin_items: 1          # keep every k-th item per language while prototyping (1 = all)
+  fit_models: false
+  run_cv: false
+  cv_folds: 5
+---
+
+# Question
+
+For a bilingual child, consider *every* word they know across both languages. Is
+that lexical ability **unidimensional** (one latent trait, languages differing
+only in exposure-driven mean level) or **multidimensional** (separable language
+lexicons, and/or semantic / lexical-class sub-structure)?
+
+Naively column-binding the two CDIs and running an *exploratory* mIRT will almost
+always "find" ≥2 factors, because differential exposure alone forces English
+items and Spanish items onto separate factors regardless of the latent structure
+of ability. So this file is **confirmatory**: a small set of theoretically
+motivated structures, compared with cross-validated held-out log-likelihood and
+limited-information fit indices, with exposure modelled as a latent regressor so
+the "language factor" is not just soaking up dominance. Read the results against
+`10_o5_dimensionality_calibration.qmd`.
+
+```{r setup, include=FALSE}
+library(glue)
+library(here)
+library(mirt)
+library(splines)
+library(furrr)
+library(tidyverse)
+
+source(here("scripts", "dim_irt_helpers.R"))
+
+theme_set(
+  theme_bw() +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_blank(),
+      strip.background = element_blank(),
+      legend.position = "bottom"
+    )
+)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+# Data — child-level wide response matrix
+
+Rows are **children** administered in *both* languages of the pair; columns are
+`uid`s from both languages; items off the child's form are `NA`. Item difficulty
+outliers and thin items are dropped (they manufacture a spurious 2PL factor).
+
+```{r}
+langs <- c(params$language_a, params$language_b)
+
+item_table <- build_item_table(
+  items       = readRDS(here("data", "items.rds")),
+  instruments = load_instruments(here("instruments"))
+)
+df_demogs <- readRDS(here("data", "demographics.rds"))
+
+pair <- build_pair_matrix(
+  item_table, df_demogs, langs,
+  min_items_per_child = params$min_items_per_child
+)
+
+# optional item thinning for fast prototyping of the >2-factor models
+if (params$thin_items > 1) {
+  keep_uid <- pair$item_lookup |>
+    group_by(language) |>
+    filter(row_number() %% params$thin_items == 0) |>
+    pull(uid)
+  pair$resp        <- pair$resp[, keep_uid, drop = FALSE]
+  pair$item_lookup <- pair$item_lookup |> filter(uid %in% keep_uid) |>
+    arrange(match(uid, colnames(pair$resp)))
+}
+
+resp    <- pair$resp
+covdata <- as.data.frame(pair$covdata[, c("age_c", "exp_a_c")])
+il      <- pair$item_lookup
+J       <- ncol(resp)
+
+c(children = nrow(resp), items = J,
+  items_a = sum(il$language == params$language_a),
+  items_b = sum(il$language == params$language_b))
+count(il, language, lex_class)
+```
+
+# Model space
+
+| id | structure | "unidimensional" iff |
+|----|-----------|----------------------|
+| `M0` | unidimensional 2PL, all items | (baseline) |
+| `M1` | two correlated factors by **language** | `cor(F_A, F_B) → 1` |
+| `M2` | bifactor: general + **lexical-class** specifics (crossing languages) | class-specific loadings → 0 |
+| `M3` | bifactor: general + **language** specifics | ECV → 1, ω_h → ω |
+
+`M1` and `M3` are near-reparameterisations for a 2-language pair (Schmid–Leiman);
+`M3` is fit to read off ECV / ω_h. `M2` is the substantively interesting
+alternative — if a *noun* factor spans English and Spanish nouns, the
+multidimensionality is **semantic**, not linguistic. Every factor is regressed on
+`ns(age_c, 3)`; the two language factors additionally on `exp_a_c`.
+
+```{r}
+is_a       <- il$language == params$language_a
+class_idx  <- as.integer(factor(il$lex_class))    # specific-factor membership (M2)
+lang_idx   <- as.integer(factor(il$language))     # specific-factor membership (M3)
+
+spec_M0 <- mirt.model(glue("F = 1-{J}"))
+spec_M1 <- mirt.model(glue(
+  "FA = {paste(which(is_a),  collapse = ',')}\n",
+  "FB = {paste(which(!is_a), collapse = ',')}\n",
+  "COV = FA*FB"
+))
+```
+
+```{r fit, eval=params$fit_models}
+common <- list(
+  itemtype = "2PL", covdata = covdata,
+  technical = list(NCYCLES = 3000, removeEmptyRows = FALSE), verbose = TRUE
+)
+
+M0 <- do.call(mirt, c(list(resp, spec_M0, formula = ~ ns(age_c, 3)), common))
+
+M1 <- do.call(mirt, c(list(
+  resp, spec_M1, method = "QMCEM",
+  formula = list(FA = ~ ns(age_c, 3) + exp_a_c,
+                 FB = ~ ns(age_c, 3) + exp_a_c)
+), common))
+
+M2 <- do.call(bfactor, c(list(
+  resp, model = class_idx, model2 = glue("G = 1-{J}"),
+  formula = ~ ns(age_c, 3)
+), common))
+
+M3 <- do.call(bfactor, c(list(
+  resp, model = lang_idx, model2 = glue("G = 1-{J}"),
+  formula = ~ ns(age_c, 3)
+), common))
+
+saveRDS(
+  list(M0 = M0, M1 = M1, M2 = M2, M3 = M3),
+  here("models", glue("o5_mirt_{make.names(params$language_a)}.rds"))
+)
+```
+
+```{r}
+mods <- readRDS(here("models", glue("o5_mirt_{make.names(params$language_a)}.rds")))
+list2env(mods, environment())
+```
+
+# In-sample comparison
+
+```{r}
+anova(M0, M1)          # 1 vs 2 correlated language factors
+anova(M0, M3)          # 1 vs bifactor-by-language
+anova(M0, M2)          # 1 vs bifactor-by-lexical-class
+tibble(
+  model  = names(mods),
+  npars  = map_dbl(mods, \(m) extract.mirt(m, "nest")),
+  AIC    = map_dbl(mods, \(m) extract.mirt(m, "AIC")),
+  BIC    = map_dbl(mods, \(m) extract.mirt(m, "BIC")),
+  logLik = map_dbl(mods, \(m) extract.mirt(m, "logLik"))
+)
+```
+
+**Don't stop here** — more factors always fit better in-sample, and wide-range
+binary items manufacture a difficulty factor. Use the limited-information indices
+and CV below, calibrated by file 10.
+
+# Limited-information fit (M2*)
+
+```{r}
+map_dfr(mods, \(m) as_tibble(M2(m, type = "C2", calcNull = FALSE)), .id = "model") |>
+  select(model, M2, df, p, RMSEA, CFI, TLI, SRMSR)
+```
+
+# Key quantities
+
+```{r}
+# --- M1: latent correlation between the two language abilities ---
+fcov <- coef(M1, simplify = TRUE)$cov          # estimated factor covariance
+cor_ab <- cov2cor(fcov)["FA", "FB"]
+cor_ab
+
+# --- M2 / M3: standardised-loading ECV and omega (Stucky & Edelen) ---
+bifactor_ecv_omega(M3, general = "G")
+bifactor_ecv_omega(M2, general = "G")
+```
+
+Interpretation targets:
+
+- `cor_ab` from **M1** > ~.9 ⇒ effectively unidimensional across languages.
+- **M3** `ECV` > ~.85 and `omega_h` close to `omega_total` ⇒ one general
+  dimension carries almost all reliable variance.
+- **M2** class-specific loadings small / `ECV` high ⇒ no meaningful *semantic*
+  multidimensionality either.
+
+Compare `cor_ab` / `ECV` to their **null bands** in file 10 before concluding.
+
+# Cross-validated held-out log-likelihood
+
+Fits item + latent-regression parameters on training children, **fixes** them,
+then evaluates the observed-data log-likelihood on held-out children — the honest
+way to compare dimensionalities.
+
+```{r cv, eval=params$run_cv}
+plan(multisession, workers = min(params$cv_folds, availableCores()))
+
+specfuns <- list(
+  M0 = \(d, cv, ...) mirt(d, spec_M0, itemtype = "2PL", covdata = cv,
+                          formula = ~ ns(age_c, 3), verbose = FALSE, ...),
+  M1 = \(d, cv, ...) mirt(d, spec_M1, itemtype = "2PL", covdata = cv, method = "QMCEM",
+                          formula = list(FA = ~ ns(age_c, 3) + exp_a_c,
+                                         FB = ~ ns(age_c, 3) + exp_a_c),
+                          verbose = FALSE, ...),
+  M3 = \(d, cv, ...) bfactor(d, lang_idx, model2 = glue("G = 1-{J}"),
+                             covdata = cv, formula = ~ ns(age_c, 3),
+                             verbose = FALSE, ...)
+)
+
+cv_res <- imap_dfr(specfuns, \(fn, nm) tibble(
+  model = nm,
+  cv_loglik = cv_loglik_mirt(resp, covdata, fn, K = params$cv_folds)
+))
+cv_res |> arrange(desc(cv_loglik))
+```
+
+# Exploratory anchor (report, don't lead with)
+
+Age-banded tetrachoric parallel analysis: within a narrow age band the
+age-driven common variance is removed, so the retained-factor count speaks to
+*residual* structure. Heuristic only.
+
+```{r anchor, eval=params$fit_models}
+age_raw <- pair$covdata$age
+bands <- tibble(centre = quantile(age_raw, c(.35, .5, .65)) |> round()) |>
+  mutate(lo = centre - 3, hi = centre + 3)
+
+pa_by_band <- pmap_dfr(bands, function(centre, lo, hi) {
+  rows <- which(age_raw >= lo & age_raw <= hi)
+  m <- resp[rows, , drop = FALSE]
+  m <- m[, colMeans(!is.na(m)) > .8, drop = FALSE]
+  m <- m[, apply(m, 2, \(x) {p <- mean(x, na.rm = TRUE); p > .05 & p < .95}), drop = FALSE]
+  pa <- try(psych::fa.parallel(m, cor = "tet", fa = "fa", plot = FALSE,
+                               n.iter = 20), silent = TRUE)
+  tibble(age_centre = centre, n = length(rows), n_items = ncol(m),
+         n_factors = if (inherits(pa, "try-error")) NA_integer_ else pa$nfact)
+})
+pa_by_band
+```
+
+# Caveats
+
+1. **Difficulty-factor artifact** — quantified for this exact pipeline in file 10.
+2. **Exposure sparsity** — near-0%-exposure children barely identify that
+   language's specific factor.
+3. **Age nonlinearity** — `ns(age_c, 3)` is a linear-on-θ approximation; refit
+   within 6-month bands as robustness.
+4. **Sample size** — EN–SP is likely the only pair with enough bilinguals.
+5. Report **ECV / ω_h / cor(F_A,F_B)** as continuous answers, not a binary verdict.
