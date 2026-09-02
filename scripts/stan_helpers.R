@@ -52,7 +52,10 @@ fit_stan_by_lexical_category <- function(data, model_file, model_name = NULL,
                                          original_dataset_name = NULL,
                                          seed = 123, iter = 4000,
                                          warmup = 1000, chains = 4,
-                                         control = list(max_treedepth = 15)) {
+                                         control = list(max_treedepth = 15),
+                                         method = c("sampling", "vb"),
+                                         vb_args = list()) {
+  method <- match.arg(method)
   if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
   
   # Get unique lexical categories if not supplied
@@ -61,7 +64,8 @@ fit_stan_by_lexical_category <- function(data, model_file, model_name = NULL,
   }
   
   for (cat in categories) {
-    message("Fitting model for lexical category: ", cat)
+    message("Fitting model for lexical category: ", cat,
+            " using method: ", method)
     
     # Prepare Stan data
     stan_data <- prepare_stan_data(
@@ -73,19 +77,32 @@ fit_stan_by_lexical_category <- function(data, model_file, model_name = NULL,
     )
     
     # Fit Stan model
-    fit <- stan(
-      file = model_file,
-      data = stan_data,
-      model_name = if (is.null(model_name)) paste0("model_", cat) else model_name,
-      control = control,
-      iter = iter,
-      warmup = warmup,
-      chains = chains,
-      seed = seed
-    )
+    if (method == "sampling") {
+      fit <- rstan::stan(
+        file = model_file,
+        data = stan_data,
+        model_name = if (is.null(model_name)) paste0("model_", cat) else model_name,
+        control = control,
+        iter = iter,
+        warmup = warmup,
+        chains = chains,
+        seed = seed
+      )
+    } else if (method == "vb") {
+      # Combine user-supplied vb_args with defaults
+      sm <- rstan::stan_model(file = model_file)
+      vb_defaults <- list(
+        object = sm,
+        data = stan_data,
+        seed = seed
+      )
+      vb_args <- modifyList(vb_defaults, vb_args)
+      fit <- do.call(rstan::vb, vb_args)
+    }
     
     # Save model
-    out_file <- file.path(output_dir, paste0(tools::file_path_sans_ext(basename(model_file)), "_fit_", cat, ".rds"))
+    out_file <- file.path(output_dir, 
+                          paste0(tools::file_path_sans_ext(basename(model_file)), "_fit_", cat, "_", method, ".rds"))
     saveRDS(fit, file = out_file)
     message("Saved model fit to: ", out_file)
     
