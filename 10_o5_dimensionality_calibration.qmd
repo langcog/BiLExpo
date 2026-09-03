@@ -5,7 +5,8 @@ params:
   language_a: "English (American)"
   language_b: "Spanish (Mexican)"
   min_items_per_child: 20
-  n_rep: 100
+  thin_items: 4          # keep every k-th item/language: M_lang is ~15 min/fit at full width
+  n_rep: 50
   dev_sd: 0.6            # SD of the structure-controlled ability deviation
   run_sim: false
   run_bayes_sbc: false
@@ -67,6 +68,18 @@ child_data <- readRDS(here("data", "bilingual_hirt_stage2_data.rds"))
 # real design: children in both languages, real form (NA pattern), real covariates
 pair <- build_pair_matrix(item_table, df_demogs, langs,
                           min_items_per_child = params$min_items_per_child)
+
+# thin items (each replicate refits M_lang, a 3-D bifactor); keeps calibration
+# runtime sane. Do this BEFORE deriving ipar / is_a so everything stays aligned.
+if (params$thin_items > 1) {
+  keep_uid <- pair$item_lookup |>
+    group_by(language) |>
+    filter(row_number() %% params$thin_items == 0) |>
+    pull(uid)
+  pair$resp        <- pair$resp[, keep_uid, drop = FALSE]
+  pair$item_lookup <- pair$item_lookup |> filter(uid %in% keep_uid) |>
+    arrange(match(uid, colnames(pair$resp)))
+}
 
 # item params aligned to the columns of pair$resp; drop items with no estimate
 ipar <- tibble(uid = colnames(pair$resp)) |>
@@ -135,43 +148,53 @@ simulate_rep <- function(structure, rho = 1, ecv = 1, seed = 1) {
 }
 ```
 
-# Pipeline under test (mirror of file 08: M0 vs M1)
+# Pipeline under test (mirror of file 08: M0 vs M_lang)
 
 ```{r}
 analyse_rep <- function(y, truth) {
   # drop items that came out near-constant in this replicate
   ok <- apply(y, 2, \(x) { p <- mean(x, na.rm = TRUE)
                            sum(!is.na(x)) >= 50 && p > .02 && p < .98 })
-  y  <- y[, ok, drop = FALSE]
-  isa <- (col_lang[ok] == params$language_a)
-  J   <- ncol(y)
-  cov <- as.data.frame(pair$covdata[, c("age_c", "exp_a_c")])
+  y     <- y[, ok, drop = FALSE]
+  lang  <- col_lang[ok]
+  klass <- pair$item_lookup$lex_class[ok]
+  cov   <- as.data.frame(pair$covdata[, c("age_c", "exp_a_c")])
 
-  spec_M0 <- mirt.model(glue("F = 1-{J}"))
-  spec_M1 <- mirt.model(glue(
-    "FA = {paste(which(isa),  collapse = ',')}\n",
-    "FB = {paste(which(!isa), collapse = ',')}\nCOV = FA*FB"))
+  specs <- o5_model_specs(lang, klass)
+  lang_formula <- c(
+    list(G = ~ ns(age_c, 3)),
+    setNames(rep(list(~ exp_a_c), length(unique(lang))),
+             paste0("S_", make.names(unique(lang))))
+  )
 
-  M0 <- mirt(y, spec_M0, itemtype = "2PL", covdata = cov,
+  M0 <- mirt(y, specs$M0, itemtype = "2PL", method = "EM", covdata = cov,
              formula = ~ ns(age_c, 3), verbose = FALSE)
-  M1 <- mirt(y, spec_M1, itemtype = "2PL", method = "QMCEM", covdata = cov,
-             formula = list(FA = ~ ns(age_c, 3) + exp_a_c,
-                            FB = ~ ns(age_c, 3) + exp_a_c), verbose = FALSE)
+  ML <- mirt(y, specs$M_lang, itemtype = "2PL", method = "EM", covdata = cov,
+             formula = lang_formula, verbose = FALSE,
+             technical = list(NCYCLES = 2000))
 
-  cor_ab <- cov2cor(coef(M1, simplify = TRUE)$cov)["FA", "FB"]
-  lr <- anova(M0, M1)
+  eo <- bifactor_ecv_omega(ML, general = 1)
+  cc <- bifactor_cross_corr(ML, lang, general = 1)
+  lr <- anova(M0, ML)
 
   tibble(
     structure  = truth$structure,
     rho_true   = truth$rho,
     ecv_true   = truth$ecv,
-    cor_ab_hat = cor_ab,
+    implied_r  = cc$implied_r,
+    ecv_hat    = eo$ECV,
+    omega_h    = eo$omega_h,
+    ml_converged = extract.mirt(ML, "converged"),
     lr_p       = lr$p[2],
-    prefer_2f  = lr$p[2] < 0.05 &&
-                 extract.mirt(M1, "BIC") < extract.mirt(M0, "BIC")
+    prefer_2f  = isTRUE(lr$p[2] < 0.05) &&
+                 extract.mirt(ML, "BIC") < extract.mirt(M0, "BIC")
   )
 }
 ```
+
+At `thin_items = 4` each `analyse_rep` is ~1–2 min (M0 + a 3-D bifactor on
+~40 items/language). `n_rep = 50` across 6 conditions ≈ 300 fits — budget a few
+hours, parallelised.
 
 # Run the grid
 
@@ -203,43 +226,48 @@ results <- readRDS(here("models", glue("o5_calibration_{make.names(params$langua
 
 ```{r}
 results |>
-  filter(structure == "unidim") |>
+  filter(structure == "unidim", ml_converged) |>
   summarise(
-    p_prefer_2factor   = mean(prefer_2f),
-    cor_ab_hat_median  = median(cor_ab_hat),        # should be ~1
-    cor_ab_hat_q05     = quantile(cor_ab_hat, .05),
-    cor_ab_hat_q95     = quantile(cor_ab_hat, .95)
+    n_reps            = n(),
+    p_prefer_2factor  = mean(prefer_2f),
+    implied_r_median  = median(implied_r),          # should be ~1
+    implied_r_q05     = quantile(implied_r, .05),
+    ecv_hat_median    = median(ecv_hat),            # should be ~1
+    ecv_hat_q05       = quantile(ecv_hat, .05)
   )
 ```
 
 This is the **null calibration** of the whole pipeline. If `p_prefer_2factor` is,
 say, 0.30, a "2-factor wins" result on real data is not evidence of
-multidimensionality on its own, and the real-data `cor_ab_hat` must be compared
-against the `[q05, q95]` null band — not against 1.0.
+multidimensionality on its own, and the real-data `implied_r` / `ecv_hat` must be
+read against the `[q05, 1]` null band — not against 1.0. (In the smoke tests the
+pipeline mildly *over*estimated ECV, so expect `ecv_hat_median` a touch below 1
+even here.)
 
 # 2. Power and bias (truth = separable / bifactor)
 
 ```{r}
 results |>
-  filter(structure != "unidim") |>
+  filter(structure != "unidim", ml_converged) |>
   group_by(structure, rho_true, ecv_true) |>
   summarise(
-    power_detect   = mean(prefer_2f),
-    cor_ab_hat_mean = mean(cor_ab_hat),
-    cor_ab_hat_bias = mean(cor_ab_hat - rho_true),   # NA for bifactor rows
+    n_reps        = n(),
+    power_detect  = mean(prefer_2f),
+    est_median    = median(ecv_hat),
+    est_vs_truth  = median(ecv_hat) - coalesce(ecv_true, rho_true),
     .groups = "drop"
   )
 ```
 
 ```{r}
 results |>
-  filter(structure == "twolexicon") |>
-  ggplot(aes(x = factor(rho_true), y = cor_ab_hat)) +
+  filter(structure == "twolexicon", ml_converged) |>
+  ggplot(aes(x = factor(rho_true), y = implied_r)) +
   geom_hline(aes(yintercept = rho_true), lty = "dashed", col = "grey50") +
   geom_violin(fill = "grey85") +
   geom_boxplot(width = .15, outlier.shape = NA) +
   labs(x = "True correlation between language lexicons",
-       y = expression(widehat(cor)(F[A], F[B])),
+       y = "implied r(F_A, F_B) from the bifactor fit",
        title = "Calibration of the estimated language-ability correlation")
 ```
 

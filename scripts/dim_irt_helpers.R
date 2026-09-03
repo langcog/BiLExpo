@@ -69,12 +69,19 @@ build_item_table <- function(items, instruments) {
 # Lexical class
 # ---------------------------------------------------------------------------
 
-#' Derive a 5-level `lex_class` (nouns / verbs / adjectives / function_words /
-#' other) from Wordbank `lexical_category` plus instrument `category`.
+#' Derive a `lex_class` column from Wordbank `lexical_category` plus instrument
+#' `category`.
 #'
-#' Mirrors the `lex_class_o2` rules in 04_o2_lexical_class.qmd. Rows that resolve
-#' to NA are kept (so callers can QC them) unless `drop_na = TRUE`.
-derive_lex_class <- function(df, drop_na = FALSE) {
+#' `coarse = FALSE` gives the 5-level scheme (nouns / verbs / adjectives /
+#' function_words / other), mirroring the `lex_class_o2` rules in
+#' 04_o2_lexical_class.qmd. `coarse = TRUE` collapses to 3 levels
+#' (nouns / predicates / closed_class) — use this for the bifactor-by-lexical-
+#' class model in 08, where each extra specific factor adds an EM quadrature
+#' dimension and 5 classes is not tractable.
+#'
+#' Rows that resolve to NA are kept (so callers can QC them) unless
+#' `drop_na = TRUE`.
+derive_lex_class <- function(df, coarse = FALSE, drop_na = FALSE) {
   out <- df |>
     mutate(lex_class = case_when(
       category == "action_words"        ~ "verbs",
@@ -88,6 +95,16 @@ derive_lex_class <- function(df, drop_na = FALSE) {
       lexical_category == "other"       ~ "other",
       TRUE ~ NA_character_
     ))
+  if (coarse) {
+    out <- out |>
+      mutate(lex_class = case_when(
+        lex_class == "nouns"                         ~ "nouns",
+        lex_class %in% c("verbs", "adjectives")      ~ "predicates",
+        lex_class == "function_words"                ~ "closed_class",
+        lex_class == "other"                         ~ "predicates",
+        TRUE ~ NA_character_
+      ))
+  }
   if (drop_na) out <- filter(out, !is.na(lex_class))
   out
 }
@@ -139,7 +156,8 @@ child_language_exposure <- function(df_demogs, languages) {
 build_pair_matrix <- function(item_table, df_demogs, langs,
                               min_items_per_child = 20,
                               min_item_n = 50,
-                              item_p_bounds = c(0.02, 0.98)) {
+                              item_p_bounds = c(0.02, 0.98),
+                              coarse_lex_class = TRUE) {
   stopifnot(length(langs) == 2)
 
   df_pair <- item_table |> filter(language %in% langs)
@@ -152,7 +170,7 @@ build_pair_matrix <- function(item_table, df_demogs, langs,
 
   df_pair <- df_pair |>
     filter(child_id %in% children_both) |>
-    derive_lex_class()
+    derive_lex_class(coarse = coarse_lex_class)
 
   item_lookup <- df_pair |>
     distinct(uid, language, lex_class, unilemma)
@@ -175,6 +193,13 @@ build_pair_matrix <- function(item_table, df_demogs, langs,
   # per-child item-count filter
   resp_wide <- resp_wide[rowSums(!is.na(resp_wide)) >= min_items_per_child, ,
                          drop = FALSE]
+
+  # order columns by language then uid, so factor specs can use range syntax
+  ord <- item_lookup |>
+    filter(uid %in% colnames(resp_wide)) |>
+    arrange(match(language, langs), uid) |>
+    pull(uid)
+  resp_wide <- resp_wide[, ord, drop = FALSE]
 
   item_lookup <- item_lookup |>
     filter(uid %in% colnames(resp_wide)) |>
@@ -287,22 +312,28 @@ wide_to_long_obs <- function(resp, item_lookup, covdata) {
 # mIRT post-processing
 # ---------------------------------------------------------------------------
 
-#' Standardised-loading ECV, omega_total and omega_h for a fitted `mirt::bfactor`
-#' model, following Stucky & Edelen (2014): lambda = a / sqrt(1 + sum a^2).
-#'
-#' `general` is the index (or "last") of the general-factor slope column; mirt's
-#' `bfactor()` appends the general factor as the last dimension.
-bifactor_ecv_omega <- function(bf_mod, general = "last") {
-  a <- mirt::coef(bf_mod, simplify = TRUE)$items
+#' Standardised item loadings from a fitted multidimensional `mirt` model,
+#' following Stucky & Edelen (2014): lambda = a / sqrt(1 + sum a^2).
+#' Returns an items x factors matrix.
+mirt_std_loadings <- function(mod) {
+  a <- mirt::coef(mod, simplify = TRUE)$items
   a <- a[, grepl("^a[0-9]+$", colnames(a)), drop = FALSE]
-  g_col <- if (identical(general, "last")) ncol(a) else general
+  a / sqrt(1 + rowSums(a^2))
+}
 
-  denom  <- sqrt(1 + rowSums(a^2))
-  lambda <- a / denom
-  gen    <- lambda[, g_col]
-  spec   <- lambda[, setdiff(seq_len(ncol(lambda)), g_col), drop = FALSE]
+#' Standardised-loading ECV, omega_total and omega_h for a fitted bifactor model
+#' (general factor + orthogonal specific factors).
+#'
+#' `general` is the column index of the general-factor slope. When the model is
+#' built from an explicit `mirt.model()` spec that names the general factor first
+#' (`G = 1-J` then the specifics) this is `1` — the default. mirt's `bfactor()`
+#' also orders the general factor first (`a1`).
+bifactor_ecv_omega <- function(bf_mod, general = 1) {
+  lambda <- mirt_std_loadings(bf_mod)
+  gen    <- lambda[, general]
+  spec   <- lambda[, setdiff(seq_len(ncol(lambda)), general), drop = FALSE]
 
-  u2 <- 1 - gen^2 - rowSums(spec^2)
+  u2 <- pmax(1 - gen^2 - rowSums(spec^2), 0)
   ss_spec <- sum(colSums(spec)^2)
   gg      <- sum(gen)^2
   denom_o <- gg + ss_spec + sum(u2)
@@ -314,12 +345,32 @@ bifactor_ecv_omega <- function(bf_mod, general = "last") {
   )
 }
 
+#' Correlation between the two language-ability composites implied by a
+#' bifactor-by-language model: r ~ sqrt(ECV_A * ECV_B), where ECV_k is the share
+#' of group k's common variance carried by the general factor. `group_items` is a
+#' vector (length = n items, in model column order) naming each item's language.
+bifactor_cross_corr <- function(bf_mod, group_items, general = 1) {
+  lambda <- mirt_std_loadings(bf_mod)
+  gen  <- lambda[, general]
+  spec <- lambda[, setdiff(seq_len(ncol(lambda)), general), drop = FALSE]
+  grp_ecv <- tapply(seq_along(group_items), group_items, function(ix) {
+    sum(gen[ix]^2) / sum(gen[ix]^2 + rowSums(spec[ix, , drop = FALSE]^2))
+  })
+  tibble(group = names(grp_ecv), ecv_group = as.numeric(grp_ecv)) |>
+    tidyr::pivot_wider(names_from = group, values_from = ecv_group) |>
+    mutate(implied_r = sqrt(prod(grp_ecv)))
+}
+
 #' K-fold cross-validated observed-data log-likelihood for a mirt model.
 #'
 #' `specfun(data, covdata, ...)` must fit and return a mirt object; extra `...`
 #' (e.g. `pars=`, `technical=`) are forwarded. Parameters are estimated on the
 #' training fold, fixed, and scored on the held-out fold. Requires a `future`
 #' plan to be set by the caller for parallelism.
+#'
+#' NOTE: each fold refits the model from scratch, so for the bifactor models
+#' (~15 min per fit on full item sets) a 5-fold CV is ~75 min per model. Thin the
+#' item set (08's `thin_items` param) before running this.
 cv_loglik_mirt <- function(resp, covdata, specfun, K = 5, seed = 123) {
   set.seed(seed)
   folds <- sample(rep(seq_len(K), length.out = nrow(resp)))
@@ -332,4 +383,38 @@ cv_loglik_mirt <- function(resp, covdata, specfun, K = 5, seed = 123) {
                       pars = pars, technical = list(NCYCLES = 1))
     as.numeric(mirt::extract.mirt(fit_te, "logLik"))
   }, .options = furrr::furrr_options(seed = TRUE)) |> sum()
+}
+
+#' Build the `mirt.model()` spec strings for the O5 model space, given a
+#' `language` vector and a `lex_class` vector in model column order.
+#'
+#' Returns a list with `M0` (unidimensional), `M_lang` (bifactor: general +
+#' one specific per language) and `M_class` (bifactor: general + one specific
+#' per lexical class). Columns are assumed grouped by language (as
+#' `build_pair_matrix()` returns them), so language specifics use range syntax.
+o5_model_specs <- function(language, lex_class) {
+  J <- length(language)
+  rng <- function(ix) {
+    w <- which(ix)
+    if (all(diff(w) == 1)) sprintf("%d-%d", min(w), max(w))
+    else paste(w, collapse = ",")
+  }
+  langs <- unique(language)
+  classes <- sort(unique(lex_class))
+
+  list(
+    M0 = mirt::mirt.model(sprintf("F = 1-%d", J)),
+    M_lang = mirt::mirt.model(paste0(
+      sprintf("G = 1-%d\n", J),
+      paste(sprintf("S_%s = %s", make.names(langs),
+                    vapply(langs, \(l) rng(language == l), character(1))),
+            collapse = "\n")
+    )),
+    M_class = mirt::mirt.model(paste0(
+      sprintf("G = 1-%d\n", J),
+      paste(sprintf("S_%s = %s", make.names(classes),
+                    vapply(classes, \(k) rng(lex_class == k), character(1))),
+            collapse = "\n")
+    ))
+  )
 }

@@ -96,70 +96,68 @@ count(il, language, lex_class)
 | id | structure | "unidimensional" iff |
 |----|-----------|----------------------|
 | `M0` | unidimensional 2PL, all items | (baseline) |
-| `M1` | two correlated factors by **language** | `cor(F_A, F_B) → 1` |
-| `M2` | bifactor: general + **lexical-class** specifics (crossing languages) | class-specific loadings → 0 |
-| `M3` | bifactor: general + **language** specifics | ECV → 1, ω_h → ω |
+| `M_lang` | bifactor: general + one specific factor per **language** | ECV → 1, ω_h → ω, implied `r(F_A,F_B)` → 1 |
+| `M_class` | bifactor: general + one specific factor per **lexical class** (crossing languages) | class-specific loadings → 0 |
 
-`M1` and `M3` are near-reparameterisations for a 2-language pair (Schmid–Leiman);
-`M3` is fit to read off ECV / ω_h. `M2` is the substantively interesting
-alternative — if a *noun* factor spans English and Spanish nouns, the
-multidimensionality is **semantic**, not linguistic. Every factor is regressed on
-`ns(age_c, 3)`; the two language factors additionally on `exp_a_c`.
+`M_lang` is the primary model. It nests the "one general lexical-ability
+dimension" and "two separable lexicons" cases and reports both **ECV / ω_h** and
+the **implied cross-language correlation** — so it does the job the
+correlated-two-factor model would, without that model's convergence problems
+(with per-factor `ns(age)` latent regression it runs ~20 min and does *not*
+converge in mirt 1.46.1). `M_class` is the substantively interesting alternative:
+if a *predicate* factor spans English and Spanish predicates, the
+multidimensionality is **semantic**, not linguistic. Lexical class is collapsed
+to 3 levels (nouns / predicates / closed-class) — each specific factor is another
+EM quadrature dimension and 5 classes is not tractable.
+
+**mirt constraints that shape this (1.46.1):** latent regression (`formula`)
+requires an EM-family method, so `method = "EM"`; `bfactor()` does not support
+`formula` at all, so the bifactor models are built from explicit `mirt.model()`
+specs. `M_lang` (3-D) fits in ~15 min for ~130 items and scales roughly linearly
+in item count; `M_class` (4-D) is similar. Prototype with `thin_items > 1`.
+
+The general factor is regressed on `ns(age_c, 3)`; in `M_lang` the language
+specifics are additionally regressed on `exp_a_c` so exposure-driven dominance
+does not inflate a specific factor.
 
 ```{r}
-is_a       <- il$language == params$language_a
-class_idx  <- as.integer(factor(il$lex_class))    # specific-factor membership (M2)
-lang_idx   <- as.integer(factor(il$language))     # specific-factor membership (M3)
-
-spec_M0 <- mirt.model(glue("F = 1-{J}"))
-spec_M1 <- mirt.model(glue(
-  "FA = {paste(which(is_a),  collapse = ',')}\n",
-  "FB = {paste(which(!is_a), collapse = ',')}\n",
-  "COV = FA*FB"
-))
+specs <- o5_model_specs(il$language, il$lex_class)
+lang_names  <- make.names(unique(il$language))     # S_ factor names in M_lang
+class_names <- make.names(sort(unique(il$lex_class)))
 ```
 
 ```{r fit, eval=params$fit_models}
-common <- list(
-  itemtype = "2PL", covdata = covdata,
-  technical = list(NCYCLES = 3000, removeEmptyRows = FALSE), verbose = TRUE
+common <- list(itemtype = "2PL", covdata = covdata, method = "EM",
+               technical = list(NCYCLES = 3000), verbose = TRUE)
+
+M0 <- do.call(mirt, c(list(resp, specs$M0, formula = ~ ns(age_c, 3)), common))
+
+# general on age; each language specific on exposure
+lang_formula <- c(
+  list(G = ~ ns(age_c, 3)),
+  setNames(rep(list(~ exp_a_c), length(lang_names)), paste0("S_", lang_names))
 )
+M_lang <- do.call(mirt, c(list(resp, specs$M_lang, formula = lang_formula), common))
 
-M0 <- do.call(mirt, c(list(resp, spec_M0, formula = ~ ns(age_c, 3)), common))
+M_class <- do.call(mirt, c(list(resp, specs$M_class, formula = ~ ns(age_c, 3)),
+                           common))
 
-M1 <- do.call(mirt, c(list(
-  resp, spec_M1, method = "QMCEM",
-  formula = list(FA = ~ ns(age_c, 3) + exp_a_c,
-                 FB = ~ ns(age_c, 3) + exp_a_c)
-), common))
-
-M2 <- do.call(bfactor, c(list(
-  resp, model = class_idx, model2 = glue("G = 1-{J}"),
-  formula = ~ ns(age_c, 3)
-), common))
-
-M3 <- do.call(bfactor, c(list(
-  resp, model = lang_idx, model2 = glue("G = 1-{J}"),
-  formula = ~ ns(age_c, 3)
-), common))
-
-saveRDS(
-  list(M0 = M0, M1 = M1, M2 = M2, M3 = M3),
-  here("models", glue("o5_mirt_{make.names(params$language_a)}.rds"))
-)
+saveRDS(list(M0 = M0, M_lang = M_lang, M_class = M_class),
+        here("models", glue("o5_mirt_{make.names(params$language_a)}.rds")))
 ```
 
 ```{r}
 mods <- readRDS(here("models", glue("o5_mirt_{make.names(params$language_a)}.rds")))
 list2env(mods, environment())
+walk2(names(mods), mods,
+      \(nm, m) message(nm, ": converged = ", extract.mirt(m, "converged")))
 ```
 
 # In-sample comparison
 
 ```{r}
-anova(M0, M1)          # 1 vs 2 correlated language factors
-anova(M0, M3)          # 1 vs bifactor-by-language
-anova(M0, M2)          # 1 vs bifactor-by-lexical-class
+anova(M0, M_lang)
+anova(M0, M_class)
 tibble(
   model  = names(mods),
   npars  = map_dbl(mods, \(m) extract.mirt(m, "nest")),
@@ -170,58 +168,60 @@ tibble(
 ```
 
 **Don't stop here** — more factors always fit better in-sample, and wide-range
-binary items manufacture a difficulty factor. Use the limited-information indices
-and CV below, calibrated by file 10.
+binary items manufacture a difficulty factor. Use the cross-validated
+log-likelihood below, calibrated by file 10.
 
 # Limited-information fit (M2*)
 
+`mirt::M2()` does **not** support latent-regression models (1.46.1), so this only
+runs if you refit the models without `formula` (e.g. within a narrow age band).
+Left here as a `tryCatch` so it degrades gracefully.
+
 ```{r}
-map_dfr(mods, \(m) as_tibble(M2(m, type = "C2", calcNull = FALSE)), .id = "model") |>
-  select(model, M2, df, p, RMSEA, CFI, TLI, SRMSR)
+m2_fit <- map(mods, \(m) tryCatch(as_tibble(M2(m, type = "C2", calcNull = FALSE)),
+                                  error = \(e) tibble(note = conditionMessage(e))))
+bind_rows(m2_fit, .id = "model")
 ```
 
 # Key quantities
 
 ```{r}
-# --- M1: latent correlation between the two language abilities ---
-fcov <- coef(M1, simplify = TRUE)$cov          # estimated factor covariance
-cor_ab <- cov2cor(fcov)["FA", "FB"]
-cor_ab
+# --- M_lang: ECV / omega_h (general factor is column 1 of the explicit spec) ---
+bifactor_ecv_omega(M_lang, general = 1)
 
-# --- M2 / M3: standardised-loading ECV and omega (Stucky & Edelen) ---
-bifactor_ecv_omega(M3, general = "G")
-bifactor_ecv_omega(M2, general = "G")
+# --- M_lang: correlation between the two language-ability composites ---
+bifactor_cross_corr(M_lang, il$language, general = 1)
+
+# --- M_class: is there semantic (lexical-class) sub-structure? ---
+bifactor_ecv_omega(M_class, general = 1)
 ```
 
-Interpretation targets:
+Interpretation targets (compare every number to its **null band** in file 10
+before concluding — the pipeline mildly *over*estimates ECV):
 
-- `cor_ab` from **M1** > ~.9 ⇒ effectively unidimensional across languages.
-- **M3** `ECV` > ~.85 and `omega_h` close to `omega_total` ⇒ one general
-  dimension carries almost all reliable variance.
-- **M2** class-specific loadings small / `ECV` high ⇒ no meaningful *semantic*
-  multidimensionality either.
-
-Compare `cor_ab` / `ECV` to their **null bands** in file 10 before concluding.
+- **M_lang** `implied_r` > ~.9 and `ECV` > ~.85, `omega_h` close to
+  `omega_total` ⇒ one general dimension carries almost all reliable variance;
+  languages differ only by exposure-driven level.
+- **M_lang** `implied_r` clearly < ~.7 / low `ECV` ⇒ separable lexicons.
+- **M_class** class-specific loadings small / `ECV` high ⇒ no meaningful
+  *semantic* multidimensionality either.
 
 # Cross-validated held-out log-likelihood
 
 Fits item + latent-regression parameters on training children, **fixes** them,
-then evaluates the observed-data log-likelihood on held-out children — the honest
-way to compare dimensionalities.
+then evaluates the observed-data log-likelihood on held-out children. Each fold
+is a full refit — with `M_lang` at ~15 min that is ~75 min for 5 folds, so run
+this with `thin_items` set (e.g. 3–4).
 
 ```{r cv, eval=params$run_cv}
 plan(multisession, workers = min(params$cv_folds, availableCores()))
 
 specfuns <- list(
-  M0 = \(d, cv, ...) mirt(d, spec_M0, itemtype = "2PL", covdata = cv,
+  M0 = \(d, cv, ...) mirt(d, specs$M0, itemtype = "2PL", method = "EM", covdata = cv,
                           formula = ~ ns(age_c, 3), verbose = FALSE, ...),
-  M1 = \(d, cv, ...) mirt(d, spec_M1, itemtype = "2PL", covdata = cv, method = "QMCEM",
-                          formula = list(FA = ~ ns(age_c, 3) + exp_a_c,
-                                         FB = ~ ns(age_c, 3) + exp_a_c),
-                          verbose = FALSE, ...),
-  M3 = \(d, cv, ...) bfactor(d, lang_idx, model2 = glue("G = 1-{J}"),
-                             covdata = cv, formula = ~ ns(age_c, 3),
-                             verbose = FALSE, ...)
+  M_lang = \(d, cv, ...) mirt(d, specs$M_lang, itemtype = "2PL", method = "EM",
+                              covdata = cv, formula = lang_formula,
+                              verbose = FALSE, ...)
 )
 
 cv_res <- imap_dfr(specfuns, \(fn, nm) tibble(
@@ -260,7 +260,17 @@ pa_by_band
 1. **Difficulty-factor artifact** — quantified for this exact pipeline in file 10.
 2. **Exposure sparsity** — near-0%-exposure children barely identify that
    language's specific factor.
-3. **Age nonlinearity** — `ns(age_c, 3)` is a linear-on-θ approximation; refit
-   within 6-month bands as robustness.
-4. **Sample size** — EN–SP is likely the only pair with enough bilinguals.
-5. Report **ECV / ω_h / cor(F_A,F_B)** as continuous answers, not a binary verdict.
+3. **Age nonlinearity** — `ns(age_c, 3)` in the latent regression is a
+   linear-on-θ approximation; refit within 6-month bands as robustness (and to
+   get `M2()` limited-info fit indices, which need non-regression models).
+4. **`"Log-likelihood was decreasing near the ML solution"`** prints on nearly
+   every fit here — it is the known benign mirt EM behaviour with latent
+   regression and many parameters, not a failure. Check
+   `extract.mirt(m, "converged")` and, for `M_lang`, that the general-factor
+   slopes are sane (not all ~6, which would be the degenerate Guttman fit you get
+   with no age control).
+5. **Pipeline over-estimates ECV** — in synthetic tests `ecv_hat` ≈ 0.81–0.84
+   when the truth was 0.65–0.70. Always read the real-data number against its
+   file-10 null/calibration band.
+6. **Sample size** — EN–SP is likely the only pair with enough bilinguals.
+7. Report **ECV / ω_h / implied r** as continuous answers, not a binary verdict.
