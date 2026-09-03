@@ -20,9 +20,20 @@ suppressPackageStartupMessages({
 # Instruments + item table
 # ---------------------------------------------------------------------------
 
-#' Load every `instruments/<language>.csv` into one long item-metadata table.
-load_instruments <- function(instruments_dir) {
-  files <- list.files(instruments_dir, pattern = "\\.csv$", full.names = TRUE)
+#' Locate the instrument CSV directory. The committed pipeline (01/04/05) uses
+#' `here("instruments")`; this repo's local data drop puts them under
+#' `here("data", "instruments")`. Accept either.
+instruments_dir <- function() {
+  for (p in c(here::here("instruments"), here::here("data", "instruments"))) {
+    if (dir.exists(p) && length(list.files(p, pattern = "\\.csv$"))) return(p)
+  }
+  stop("No instruments/*.csv found in instruments/ or data/instruments/")
+}
+
+#' Load every `<language>.csv` in the instruments directory into one long
+#' item-metadata table. `instruments_path` defaults to `instruments_dir()`.
+load_instruments <- function(instruments_path = instruments_dir()) {
+  files <- list.files(instruments_path, pattern = "\\.csv$", full.names = TRUE)
   map(files, \(f) {
     read_csv(f, show_col_types = FALSE) |>
       mutate(uid = glue("item_{row_number()}")) |>
@@ -48,18 +59,23 @@ load_instruments <- function(instruments_dir) {
 #' Join Wordbank item responses to instrument metadata and attach a stable `uid`.
 #'
 #' `items` is `readRDS(here("data", "items.rds"))`; `instruments` is
-#' `load_instruments()`. Returns one row per (administration, item) with `uid`,
-#' `unilemma`, `category`, `lexical_category`, and a numeric `value`.
+#' `load_instruments()`. `category` and `lexical_category` are taken from `items`
+#' (Wordbank), matching 01/04; the instruments table supplies only `uid`.
+#' Returns one row per (administration, item) with `uid`, `unilemma`, `category`,
+#' `lexical_category`, and a numeric `value`.
 build_item_table <- function(items, instruments) {
   items |>
     rename(unilemma = uni_lemma) |>
     filter(item_kind == "word", language != "Other Langs") |>
+    mutate(item_id = as.character(item_id)) |>
     left_join(
-      instruments |> select(language, form, item_id, uid, category),
+      instruments |> select(language, form, item_id, uid) |>
+        mutate(item_id = as.character(item_id)),
       by = join_by(language, form, item_id)
     ) |>
     mutate(
-      uid = coalesce(as.character(uid), glue("{language}_{item_id}")),
+      uid = as.character(coalesce(as.character(uid),
+                                  paste0(language, "_", item_id))),
       value = as.numeric(produces)
     ) |>
     filter(!is.na(value))
@@ -74,10 +90,10 @@ build_item_table <- function(items, instruments) {
 #'
 #' `coarse = FALSE` gives the 5-level scheme (nouns / verbs / adjectives /
 #' function_words / other), mirroring the `lex_class_o2` rules in
-#' 04_o2_lexical_class.qmd. `coarse = TRUE` collapses to 3 levels
-#' (nouns / predicates / closed_class) — use this for the bifactor-by-lexical-
-#' class model in 08, where each extra specific factor adds an EM quadrature
-#' dimension and 5 classes is not tractable.
+#' 04_o2_lexical_class.qmd. `coarse = TRUE` collapses to 4 levels
+#' (nouns / predicates / closed_class / other, the last also absorbing items with
+#' no `lexical_category`) — use this for the bifactor-by-lexical-class model in
+#' 08, where each extra specific factor adds an EM quadrature dimension.
 #'
 #' Rows that resolve to NA are kept (so callers can QC them) unless
 #' `drop_na = TRUE`.
@@ -98,11 +114,10 @@ derive_lex_class <- function(df, coarse = FALSE, drop_na = FALSE) {
   if (coarse) {
     out <- out |>
       mutate(lex_class = case_when(
-        lex_class == "nouns"                         ~ "nouns",
-        lex_class %in% c("verbs", "adjectives")      ~ "predicates",
-        lex_class == "function_words"                ~ "closed_class",
-        lex_class == "other"                         ~ "predicates",
-        TRUE ~ NA_character_
+        lex_class == "nouns"                    ~ "nouns",
+        lex_class %in% c("verbs", "adjectives") ~ "predicates",
+        lex_class == "function_words"           ~ "closed_class",
+        TRUE                                    ~ "other"   # incl. "other" + NA
       ))
   }
   if (drop_na) out <- filter(out, !is.na(lex_class))
@@ -130,6 +145,17 @@ child_language_exposure <- function(df_demogs, languages) {
   df_demogs |>
     mutate(child_id = as.character(child_id)) |>
     select(child_id, age, dataset_name, languages) |>
+    # Wordbank stores the nested exposure_proportion as integer / double / logical
+    # across rows; normalise every nested tibble to (chr, dbl) before unnest so
+    # vctrs doesn't choke on the mixed ptypes.
+    mutate(languages = map(languages, \(d) {
+      if (is.null(d) || !nrow(d)) {
+        return(tibble(exposure_language = character(),
+                      exposure_proportion = double()))
+      }
+      tibble(exposure_language   = as.character(d$exposure_language),
+             exposure_proportion = suppressWarnings(as.numeric(d$exposure_proportion)))
+    })) |>
     unnest(languages) |>
     filter(!is.na(exposure_language), !is.na(exposure_proportion),
            exposure_proportion <= 100) |>
@@ -170,10 +196,20 @@ build_pair_matrix <- function(item_table, df_demogs, langs,
 
   df_pair <- df_pair |>
     filter(child_id %in% children_both) |>
+    mutate(uid = as.character(uid)) |>
     derive_lex_class(coarse = coarse_lex_class)
 
+  # one row per uid: a handful of CDI items carry >1 uni_lemma / lexical_category
+  # (e.g. "drink (beverage)" vs "drink (object)", "beach" noun vs predicate) ->
+  # take the most common, ties broken by first.
+  pick_mode <- function(x) { x <- x[!is.na(x)]; if (!length(x)) return(NA_character_)
+    names(sort(table(x), decreasing = TRUE))[1] }
   item_lookup <- df_pair |>
-    distinct(uid, language, lex_class, unilemma)
+    group_by(uid) |>
+    summarise(language  = first(language),
+              lex_class = pick_mode(lex_class),
+              unilemma  = pick_mode(unilemma),
+              .groups = "drop")
 
   resp_long <- df_pair |>
     group_by(child_id, uid) |>

@@ -59,7 +59,7 @@ langs <- c(params$language_a, params$language_b)
 
 item_table <- build_item_table(
   items       = readRDS(here("data", "items.rds")),
-  instruments = load_instruments(here("instruments"))
+  instruments = load_instruments()
 )
 df_demogs <- readRDS(here("data", "demographics.rds"))
 

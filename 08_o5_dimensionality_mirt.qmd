@@ -60,7 +60,7 @@ langs <- c(params$language_a, params$language_b)
 
 item_table <- build_item_table(
   items       = readRDS(here("data", "items.rds")),
-  instruments = load_instruments(here("instruments"))
+  instruments = load_instruments()
 )
 df_demogs <- readRDS(here("data", "demographics.rds"))
 
@@ -107,8 +107,8 @@ correlated-two-factor model would, without that model's convergence problems
 converge in mirt 1.46.1). `M_class` is the substantively interesting alternative:
 if a *predicate* factor spans English and Spanish predicates, the
 multidimensionality is **semantic**, not linguistic. Lexical class is collapsed
-to 3 levels (nouns / predicates / closed-class) — each specific factor is another
-EM quadrature dimension and 5 classes is not tractable.
+to 4 levels (nouns / predicates / closed-class / other) — each specific factor is
+another EM quadrature dimension, so the full Wordbank scheme is not tractable.
 
 **mirt constraints that shape this (1.46.1):** latent regression (`formula`)
 requires an EM-family method, so `method = "EM"`; `bfactor()` does not support
