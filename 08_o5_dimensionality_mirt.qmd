@@ -27,6 +27,16 @@ limited-information fit indices, with exposure modelled as a latent regressor so
 the "language factor" is not just soaking up dominance. Read the results against
 `10_o5_dimensionality_calibration.qmd`.
 
+::: {.callout-warning}
+**On the real EN–SP data this route does not converge.** With 474 bilingual
+children and ~1600 items, unregularised 2PL mIRT (even thinned to ~280 items)
+runs for hours and hits the EM cycle limit with degenerate loadings. This file
+works on the synthetic data in `10` and documents the confirmatory logic, but the
+**trustworthy real-data estimate comes from the Bayesian model in
+`09_o5_dimensionality_bayes.qmd`**, whose priors regularise the discriminations.
+Use `08` for the framing and the calibration pipeline, `09` for the number.
+:::
+
 ```{r setup, include=FALSE}
 library(glue)
 library(here)

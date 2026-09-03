@@ -5,10 +5,19 @@ params:
   language_a: "English (American)"
   language_b: "Spanish (Mexican)"
   min_items_per_child: 20
+  thin_items: 1           # keep every k-th item/language; full EN-SP is ~1665 items
   fit_models: false
-  method: "sample"        # "sample" (NUTS) or "pathfinder"
-  link_concepts: true     # FALSE -> every item its own concept (robustness check)
+  method: "sample"        # "sample" (NUTS). ADVI/pathfinder are unreliable here — see below.
+  link_concepts: "auto"   # "auto" | TRUE | FALSE — TE linking only helps with lots of overlap
 ---
+
+::: {.callout-important}
+**Use NUTS, not ADVI.** On the real EN–SP data (474 children) rstan's meanfield
+VB diverged completely — ELBO oscillating, `rho`/`ecv`/`lambda_g` collapsing to 0.
+NUTS on the same model is well-behaved (0 divergences, coherent posterior). The
+mirt route in `08` also fails to converge on this sample. This file is the one
+that produces a trustworthy number, at the cost of a multi-hour run.
+:::
 
 # Idea
 
@@ -68,40 +77,63 @@ pair <- build_pair_matrix(
   min_items_per_child = params$min_items_per_child
 )
 
+if (params$thin_items > 1) {
+  keep_uid <- pair$item_lookup |> group_by(language) |>
+    filter(row_number() %% params$thin_items == 0) |> pull(uid)
+  pair$resp        <- pair$resp[, keep_uid, drop = FALSE]
+  pair$item_lookup <- pair$item_lookup |> filter(uid %in% keep_uid) |>
+    arrange(match(uid, colnames(pair$resp)))
+}
+
 # long form the Stan model wants: one row per (child, item)
 obs <- wide_to_long_obs(pair$resp, pair$item_lookup, pair$covdata)
-if (!params$link_concepts) obs <- obs |> mutate(unilemma = NA_character_)
-
 exposure <- child_language_exposure(df_demogs, langs)
+
+link <- if (identical(params$link_concepts, "auto")) NA else
+          as.integer(isTRUE(params$link_concepts))
 
 prep <- build_dim_irt_stan_data(
   obs, exposure, langs,
-  estimate_general = 1L, estimate_specific = 1L, compute_loglik = 1L
+  estimate_general = 1L, estimate_specific = 1L,
+  link_concepts = link, compute_loglik = 1L
 )
-str(prep$data[c("N", "I", "J", "C")])
+str(prep$data[c("N", "I", "J", "C", "link_concepts")])
 ```
 
 # Fit the three nested variants
+
+Runtime scales with item count. Rough NUTS cost (4 chains, 1000+1000): ~1 h at
+150 items, ~3–4 h at 400, 8 h+ at the full 1665. Prototype with
+`thin_items: 4`; do the headline run unthinned overnight. The variance
+components (`sigma_delta`, `sigma_s`) mix slowest — watch their `rhat` / `ess`.
 
 ```{r fit, eval=params$fit_models}
 mod <- cmdstan_model(here("models", "bilingual_dim_irt.stan"))
 
 run_variant <- function(g, s, tag) {
   d <- modifyList(prep$data, list(estimate_general = g, estimate_specific = s))
-  fit <- if (params$method == "pathfinder") {
-    mod$pathfinder(data = d, seed = 123, draws = 2000, num_paths = 8)
-  } else {
-    mod$sample(data = d, seed = 123, chains = 4, parallel_chains = 4,
-               iter_warmup = 750, iter_sampling = 750, adapt_delta = 0.95)
-  }
+  fit <- mod$sample(data = d, seed = 123, chains = 4, parallel_chains = 4,
+                    iter_warmup = 1000, iter_sampling = 1000,
+                    adapt_delta = 0.95, max_treedepth = 12)
   fit$save_object(here("models", glue("o5_bayes_{tag}_{make.names(params$language_a)}.rds")))
+  print(fit$diagnostic_summary())
   fit
 }
 
-fit_full <- run_variant(1, 1, "full")      # general + specific
-fit_uni  <- run_variant(1, 0, "unidim")    # sigma_s == 0
-fit_two  <- run_variant(0, 1, "twolex")    # lambda_g == 0
+fit_full <- run_variant(1, 1, "full")      # general + specific  -> rho, ecv
+fit_uni  <- run_variant(1, 0, "unidim")    # sigma_s == 0        -> nested null
+fit_two  <- run_variant(0, 1, "twolex")    # lambda_g == 0       -> nested null
 ```
+
+::: {.callout-note}
+**Preliminary (thinned, under-sampled) result, EN (American) × ES (Mexican),
+474 children.** A short NUTS run on 166 items gave `rho` ≈ `ecv` ≈ **0.62**
+(90% CI ~0.56–0.67), `lambda_g` ≈ 1.9, `sigma_s` ≈ (1.65, 1.25): a **strong
+common lexical-ability dimension plus substantial language-specific ability** —
+neither `rho`→1 (unidimensional) nor `rho`→0 (separable lexicons). Treat as
+provisional until the full run + `10`'s calibration (the pipeline is expected to
+*over*state `rho`).
+:::
 
 ```{r}
 rd <- \(tag) readRDS(here("models", glue("o5_bayes_{tag}_{make.names(params$language_a)}.rds")))

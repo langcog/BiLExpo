@@ -278,12 +278,26 @@ build_pair_matrix <- function(item_table, df_demogs, langs,
 build_dim_irt_stan_data <- function(obs, exposure, langs,
                                     estimate_general = 1L,
                                     estimate_specific = 1L,
+                                    link_concepts = NA,
                                     compute_loglik = 1L) {
   stopifnot(length(langs) == 2)
 
   obs <- obs |>
     mutate(child_id = as.character(child_id),
            concept_key = coalesce(as.character(unilemma), uid))
+
+  # auto: only link translation equivalents if a decent share of items actually
+  # share a uni_lemma across the two languages
+  if (is.na(link_concepts)) {
+    n_shared <- obs |>
+      distinct(uid, concept_key, language) |>
+      count(concept_key) |>
+      summarise(shared = sum(n > 1)) |>
+      pull(shared)
+    link_concepts <- as.integer(n_shared >= 0.25 * n_distinct(obs$uid))
+    message("build_dim_irt_stan_data: ", n_shared,
+            " translation-equivalent concepts -> link_concepts = ", link_concepts)
+  }
 
   child_lvl   <- sort(unique(obs$child_id))
   item_lvl    <- sort(unique(obs$uid))
@@ -325,6 +339,7 @@ build_dim_irt_stan_data <- function(obs, exposure, langs,
       exposure_c = exposure_c, dominant_lang = as.integer(dominant_lang),
       estimate_general = as.integer(estimate_general),
       estimate_specific = as.integer(estimate_specific),
+      link_concepts = as.integer(link_concepts),
       compute_loglik = as.integer(compute_loglik)
     ),
     child_lvl = child_lvl,

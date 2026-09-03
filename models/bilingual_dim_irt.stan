@@ -38,6 +38,11 @@ data {
 
   int<lower=0,upper=1> estimate_general;
   int<lower=0,upper=1> estimate_specific;
+  // link_concepts=1: item easiness = concept easiness + language-specific offset
+  //   (only worth it when many items share a uni_lemma across the two languages).
+  // link_concepts=0: a single flat item-easiness level (better identified /
+  //   mixed when translation-equivalent overlap is small).
+  int<lower=0,upper=1> link_concepts;
   int<lower=0,upper=1> compute_loglik;
 }
 
@@ -53,7 +58,7 @@ parameters {
   // ---- item side ----
   vector[C] z_concept;                  // concept easiness (non-centred)
   real<lower=0> sigma_concept;
-  vector[J] z_delta;                    // language-specific item offset (non-centred)
+  vector[J] z_delta;                    // item easiness / language-specific offset (non-centred)
   real<lower=0> sigma_delta;
   vector[J] logalpha;                   // log discrimination
   real<lower=0> sigma_logalpha;
@@ -74,14 +79,17 @@ transformed parameters {
   real lambda_g       = estimate_general  ? lambda_g_raw : 0;
   vector[L] sigma_s   = estimate_specific ? sigma_s_raw  : rep_vector(0.0, L);
 
-  vector[C] concept_easiness = sigma_concept * z_concept;
-  vector[J] delta            = sigma_delta   * z_delta;
+  vector[C] concept_easiness = link_concepts ? sigma_concept * z_concept
+                                             : rep_vector(0.0, C);
+  vector[J] delta            = sigma_delta * z_delta;
   vector[I] theta_g          = z_theta_g;                       // already N(0,1)
   matrix[I, L] theta_s;
   for (l in 1:L) theta_s[, l] = sigma_s[l] * z_theta_s[, l];
 
   vector[J] b_item;   // total item easiness
-  for (j in 1:J) b_item[j] = intercept + concept_easiness[concept[j]] + delta[j];
+  for (j in 1:J)
+    b_item[j] = intercept + delta[j]
+                + (link_concepts ? concept_easiness[concept[j]] : 0);
 }
 
 model {
@@ -91,18 +99,18 @@ model {
   z_concept ~ std_normal();
   sigma_concept ~ normal(0, 2);
   z_delta ~ std_normal();
-  sigma_delta ~ normal(0, 1);
+  sigma_delta ~ normal(0, 2);
   logalpha ~ normal(0, sigma_logalpha);
-  sigma_logalpha ~ normal(0, 1);
+  sigma_logalpha ~ normal(0, 0.5);
 
   z_theta_g ~ std_normal();
-  lambda_g_raw ~ normal(0, 1);
+  lambda_g_raw ~ normal(0, 2);
   to_vector(z_theta_s) ~ std_normal();
-  sigma_s_raw ~ normal(0, 1);
+  sigma_s_raw ~ normal(0, 2);
 
-  beta_exp ~ normal(0, 1);
-  beta_age ~ normal(0, 1);
-  beta_age_exp ~ normal(0, 1);
+  beta_exp ~ normal(0, 3);
+  beta_age ~ normal(0, 2);
+  beta_age_exp ~ normal(0, 2);
 
   // ---- likelihood ----
   {
