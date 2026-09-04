@@ -126,13 +126,30 @@ fit_two  <- run_variant(0, 1, "twolex")    # lambda_g == 0       -> nested null
 ```
 
 ::: {.callout-note}
-**Preliminary (thinned, under-sampled) result, EN (American) × ES (Mexican),
-474 children.** A short NUTS run on 166 items gave `rho` ≈ `ecv` ≈ **0.62**
-(90% CI ~0.56–0.67), `lambda_g` ≈ 1.9, `sigma_s` ≈ (1.65, 1.25): a **strong
-common lexical-ability dimension plus substantial language-specific ability** —
-neither `rho`→1 (unidimensional) nor `rho`→0 (separable lexicons). Treat as
-provisional until the full run + `10`'s calibration (the pipeline is expected to
-*over*state `rho`).
+**Result, EN (American) × ES (Mexican), 474 children, 554 items** (thinned 1-in-3
+from 1665; `link_concepts = 0`; 4 chains × 1000, 0 divergences, `rho`/`ecv`
+`n_eff` ≈ 1300, `rhat` = 1.00):
+
+| quantity | median | 95% CI |
+|---|---|---|
+| `rho`  (cross-language ability correlation) | **0.585** | 0.519–0.642 |
+| `ecv`  (person-level explained common variance) | **0.582** | 0.515–0.640 |
+| `lambda_g` | 1.85 | 1.67–2.03 |
+| `sigma_s` (EN / ES specific SD) | 1.74 / 1.37 | — |
+
+A **strong common lexical-ability dimension (~58% of reliable person variance)
+plus substantial, genuinely language-specific ability (~40%)**. The posterior
+excludes both `rho`→1 (single dimension) and `rho`→0 (independent lexicons); the
+`unidim` and `twolex` nested fits are not credible. `beta_exp` ≈ 5.4 / 3.4
+(exposure strongly shifts which language's words a child produces); `beta_age`
+≈ 0.15 [−0.05, 0.35] (weak once exposure + general ability are in — a spline on
+age would be a cleaner robustness check).
+
+Still to do: `10`'s calibration (SBC on this model — the pipeline may *over*state
+`rho`); a full-item run; a `link_concepts = 1` robustness fit on the ~95
+translation-equivalent items; other language pairs.
+
+Saved: `models/o5_bayes_EN-SP_summary.csv`, `models/o5_bayes_EN-SP_full_draws.csv`.
 :::
 
 ```{r}
