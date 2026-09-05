@@ -141,7 +141,21 @@ exposure_language_matches <- function(language, exposure_language) {
 #' One row per (child_id, language) with `exposure_proportion` in [0, 1] for the
 #' requested target `languages`. `df_demogs` is `readRDS(here("data",
 #' "demographics.rds"))` with its nested `languages` list-column.
+#'
+#' Joins downstream (here and in build_dim_irt_stan_data / build_pair_matrix)
+#' key on `child_id` alone, which is only safe if `child_id` is unique across
+#' the WHOLE file, not just within a dataset -- verified true for the current
+#' export (every child_id maps to exactly one dataset_name) but re-check this
+#' if `data/demographics.rds` is ever regenerated from a different pull.
 child_language_exposure <- function(df_demogs, languages) {
+  dup <- df_demogs |> dplyr::distinct(child_id, dataset_name) |>
+    dplyr::count(child_id) |> dplyr::filter(n > 1)
+  if (nrow(dup)) {
+    stop("child_id is not globally unique in demographics.rds (", nrow(dup),
+        " child_id(s) span >1 dataset_name) -- joins keyed on child_id alone ",
+        "would silently mix different children. Key on (dataset_name, child_id) instead.")
+  }
+
   df_demogs |>
     mutate(child_id = as.character(child_id)) |>
     select(child_id, age, dataset_name, languages) |>
@@ -174,8 +188,13 @@ child_language_exposure <- function(df_demogs, languages) {
 # ---------------------------------------------------------------------------
 
 #' Build the wide child x uid response matrix (+ aligned item lookup and person
-#' covariates) for one language pair, keeping only children administered in BOTH
-#' languages.
+#' covariates) for `langs` (2 or more), keeping only children administered in
+#' ALL of them (e.g. the trilingual English/Malay/Mandarin (Malaysian) sample).
+#'
+#' `covdata$exp_a` / `exp_a_c` are language[1]'s exposure only (used by the mIRT
+#' route in 08, which is pairwise); the Stan pipeline (09/10) gets exposure for
+#' every language from `child_language_exposure()` instead, so it is unaffected
+#' by `length(langs) > 2`.
 #'
 #' Returns list(resp, item_lookup, covdata) with rows of `resp` and `covdata`
 #' aligned by `child_id`.
@@ -184,14 +203,14 @@ build_pair_matrix <- function(item_table, df_demogs, langs,
                               min_item_n = 50,
                               item_p_bounds = c(0.02, 0.98),
                               coarse_lex_class = TRUE) {
-  stopifnot(length(langs) == 2)
+  stopifnot(length(langs) >= 2)   # works for any number of languages, not just pairs
 
   df_pair <- item_table |> filter(language %in% langs)
 
   children_both <- df_pair |>
     distinct(child_id, language) |>
     count(child_id, name = "n_langs") |>
-    filter(n_langs >= 2) |>
+    filter(n_langs >= length(langs)) |>
     pull(child_id)
 
   df_pair <- df_pair |>
@@ -271,16 +290,17 @@ build_pair_matrix <- function(item_table, df_demogs, langs,
 #' Assemble the Stan data list for `models/bilingual_dim_irt.stan`.
 #'
 #' `obs` needs columns: child_id, uid, language, unilemma (may be NA), y, age,
-#' plus per-child exposure. `langs` fixes the language index order (1 = langs[1]).
+#' plus per-child exposure. `langs` (2 or more) fixes the language index order.
 #' `exposure` is one row per (child_id, language) with `exposure_proportion` in
-#' [0, 1] (e.g. from `child_language_exposure()`); missing values are imputed to
-#' the complement / 0.5.
+#' [0, 1] (e.g. from `child_language_exposure()`); missing values are imputed —
+#' to the complement when `length(langs) == 2`, otherwise to that language's
+#' median (a 2-language complement assumption doesn't hold for 3+ languages).
 build_dim_irt_stan_data <- function(obs, exposure, langs,
                                     estimate_general = 1L,
                                     estimate_specific = 1L,
                                     link_concepts = NA,
                                     compute_loglik = 1L) {
-  stopifnot(length(langs) == 2)
+  stopifnot(length(langs) >= 2)
 
   obs <- obs |>
     mutate(child_id = as.character(child_id),
@@ -315,24 +335,30 @@ build_dim_irt_stan_data <- function(obs, exposure, langs,
     arrange(item_ix) |>
     mutate(concept_ix = match(concept_key, concept_lvl))
 
-  exp_wide <- tibble(child_id = child_lvl) |>
-    left_join(exposure |> filter(language == langs[1]) |>
-                transmute(child_id = as.character(child_id), e1 = exposure_proportion),
-              by = "child_id") |>
-    left_join(exposure |> filter(language == langs[2]) |>
-                transmute(child_id = as.character(child_id), e2 = exposure_proportion),
-              by = "child_id") |>
-    mutate(e1 = coalesce(e1, 1 - e2, 0.5),
-           e2 = coalesce(e2, 1 - e1, 0.5))
+  exp_mat <- sapply(langs, \(l) {
+    tibble(child_id = child_lvl) |>
+      left_join(exposure |> filter(language == l) |>
+                  transmute(child_id = as.character(child_id), exposure_proportion),
+                by = "child_id") |>
+      pull(exposure_proportion)
+  })
+  if (length(langs) == 2) {
+    # exactly the old behaviour: fill a missing language from the complement
+    exp_mat[, 1] <- coalesce(exp_mat[, 1], 1 - exp_mat[, 2], 0.5)
+    exp_mat[, 2] <- coalesce(exp_mat[, 2], 1 - exp_mat[, 1], 0.5)
+  } else {
+    for (l in seq_len(ncol(exp_mat))) {
+      exp_mat[, l] <- coalesce(exp_mat[, l], median(exp_mat[, l], na.rm = TRUE), 0.5)
+    }
+  }
 
-  exposure_c <- cbind(e1 = exp_wide$e1 - mean(exp_wide$e1),
-                      e2 = exp_wide$e2 - mean(exp_wide$e2))
-  dominant_lang <- max.col(cbind(exp_wide$e1, exp_wide$e2), ties.method = "first")
+  exposure_c <- scale(exp_mat, scale = FALSE)
+  dominant_lang <- max.col(exp_mat, ties.method = "first")
 
   list(
     data = list(
       N = nrow(obs), I = length(child_lvl), J = length(item_lvl),
-      C = length(concept_lvl), L = 2L,
+      C = length(concept_lvl), L = length(langs),
       y = as.integer(obs$y), child = obs$child_ix, item = obs$item_ix,
       age_sc = obs$age_sc,
       concept = item_tbl$concept_ix, item_lang = item_tbl$lang_ix,

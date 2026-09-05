@@ -1,10 +1,13 @@
-// Crossed random-effects IRT for the dimensionality of bilingual lexical ability.
+// Crossed random-effects IRT for the dimensionality of multilingual lexical
+// ability. L (data) is the number of languages and is NOT hardcoded to 2 --
+// this fits bilinguals (L=2) and multilinguals (L=3+, e.g. the trilingual
+// English/Malay/Mandarin (Malaysian) sample) with the same code.
 //
-// One row per (child, item) observation, pooled across BOTH languages of a pair.
+// One row per (child, item) observation, pooled across all L languages.
 // Item difficulty is decomposed into a translation-equivalent "concept" term
-// (shared by e.g. dog / perro via uni_lemma) plus a language-specific offset.
-// Child ability is decomposed into a GENERAL trait and a LANGUAGE-SPECIFIC
-// deviation:
+// (shared by e.g. dog / perro / anjing via uni_lemma) plus a language-specific
+// offset. Child ability is decomposed into a GENERAL trait and a
+// LANGUAGE-SPECIFIC deviation, independent across languages:
 //
 //     theta_child[i, L] = lambda_g * theta_g[i] + theta_s[i, L]
 //     theta_g[i]        ~ normal(0, 1)                       // scale fixed here
@@ -130,14 +133,24 @@ model {
 }
 
 generated quantities {
-  // Correlation between the two language abilities implied by the decomposition
-  real rho;
+  // Pairwise correlation between every two languages' abilities, implied by
+  // theta_child[,l] = lambda_g*theta_g + theta_s[,l] with theta_s independent
+  // across languages: rho[l1,l2] = lambda_g^2 / sqrt(v[l1]*v[l2]),
+  // v[l] = lambda_g^2 + sigma_s[l]^2. Generalises to any L >= 2.
+  matrix[L, L] rho_mat;
+  real rho;                     // = rho_mat[1,2]; kept for 2-language callers
   real ecv;                     // person-level explained common variance
   {
     real vg = square(lambda_g);
-    real v1 = vg + square(sigma_s[1]);
-    real v2 = vg + square(sigma_s[2]);
-    rho = (v1 > 0 && v2 > 0) ? vg / sqrt(v1 * v2) : 0;
+    vector[L] v_tot;
+    for (l in 1:L) v_tot[l] = vg + square(sigma_s[l]);
+    for (l1 in 1:L) {
+      for (l2 in 1:L) {
+        rho_mat[l1, l2] = (v_tot[l1] > 0 && v_tot[l2] > 0)
+                            ? vg / sqrt(v_tot[l1] * v_tot[l2]) : 0;
+      }
+    }
+    rho = rho_mat[1, 2];
     ecv = (vg + mean(square(sigma_s)) > 0)
             ? vg / (vg + mean(square(sigma_s))) : 1;
   }
