@@ -203,3 +203,43 @@ description.
   fit — VI understates `sigma_s` uncertainty, the parameter in question.
 - Feed `theta_child[,1]` / `theta_child[,2]` into `02_exposure_models.qmd` as a
   consistency check against the two-stage pipeline.
+
+# SBC calibration (answers `10`'s open question)
+
+One-rep-per-condition recovery check: simulate CDI responses from a **known**
+`rho_true`, using the real EN–SP form design / age / exposure and empirical item
+difficulties (from marginal endorsement rates) + discriminations drawn to match
+the fitted `sigma_logalpha` (~0.27), then refit the full model.
+
+```{r, eval=FALSE}
+# models/o5_bayes_SBC_calibration.csv
+#  rho_true  rho_hat_median   95% CI            covers?
+#      0.30      0.279       [0.191, 0.364]        yes
+#      0.60      0.576       [0.512, 0.636]        yes
+#      0.90      0.882       [0.858, 0.902]        yes  (Rhat 1.01, weaker ESS)
+```
+
+Recovery is good across the range, with a small (~0.02) low-side bias and no
+systematic inflation. **This means the headline `rho`/`ecv` numbers below can be
+read at face value** — the earlier worry (carried over from the mirt route in
+`08`, which *does* overstate multidimensionality-adjacent quantities) does not
+transfer to this Stan model.
+
+# Cross-pair replication
+
+| pair | children | items | `rho` (median, 95% CI) | `ecv` | `beta_age` |
+|---|---|---|---|---|---|
+| English (American) × Spanish (Mexican) | 474 | 554 | 0.585 [0.519, 0.642] | 0.582 | 0.15 [−0.05, 0.35] |
+| English (British) × Spanish (European) | 690 | ~420 | 0.708 [0.664, 0.747] | 0.706 | 2.21 [2.03, 2.39] |
+
+Both pairs land in the same qualitative regime — decisively **rejecting both**
+`rho → 1` (unidimensional) **and** `rho → 0` (separable lexicons) — but the
+British/European pair shows a *higher* shared-variance share (~71% vs ~58%) and
+a much stronger residual age effect. Whether that's a real difference between
+these two bilingual populations (different countries, dataset mixes, age
+ranges) or an artifact of the item thinning / sample composition is open; the
+Malaysian English/Malay/Mandarin trilingual sample (n=569, would need `L=3` in
+the Stan model) and a full-item, unthinned refit of both pairs are the natural
+next checks.
+
+Saved: `models/o5_bayes_ENGB-ESEU_summary.csv`, `models/o5_bayes_SBC_calibration.csv`.
