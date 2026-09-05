@@ -26,7 +26,7 @@ data {
   int<lower=1> I;                       // children
   int<lower=1> J;                       // items (language-specific)
   int<lower=1> C;                       // concepts (uni_lemma; singletons allowed)
-  int<lower=1,upper=2> L;               // languages in the pair (==2)
+  int<lower=2> L;                       // number of languages (2 for a pair, 3+ for multilingual)
 
   array[N] int<lower=0,upper=1> y;      // produces
   array[N] int<lower=1,upper=I> child;
