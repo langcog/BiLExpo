@@ -26,20 +26,31 @@ mIRT would), model it, and turn the dimensionality question into a
 **variance-components** question:
 
 - item easiness = translation-equivalent **concept** term (shared by `dog` /
-  `perro` via `uni_lemma`) + **language-specific offset**;
-- child ability `theta_child[i, L] = lambda_g * theta_g[i] + theta_s[i, L]`,
-  `theta_g ~ N(0,1)`, `theta_s[,L] ~ N(0, sigma_s[L])`;
+  `perro` via `uni_lemma`) + **language-specific offset** (auto-collapsed to one
+  flat item level when too few items link across languages);
+- child ability across the `L` languages is `MVN(0, Sigma)` with a
+  **compound-symmetric** covariance — a common `c_shared` between every language
+  pair, plus a per-language specific variance `sigma_s[L]^2` on the diagonal;
 - exposure + age enter as fixed per-language effects.
 
 Then
 
-- `sigma_s -> 0`  ⇒ unidimensional  (`rho -> 1`)
-- `lambda_g -> 0` ⇒ two independent lexicons (`rho -> 0`)
-- both free       ⇒ estimate `rho` and `ECV` directly — a **continuous** answer.
+- `sigma_s -> 0`   ⇒ unidimensional  (`rho -> 1`)
+- `c_shared -> 0`  ⇒ independent lexicons (`rho -> 0`)
+- both free        ⇒ estimate `rho` (pairwise) and `ECV` directly — continuous.
 
-`models/bilingual_dim_irt.stan` implements all three via the data flags
-`estimate_general` / `estimate_specific` (it is a crossed random-effects
-generalisation of the old concept/word IRT in `archive/models/model1.stan`).
+The covariance is parameterised through its Cholesky factor rather than a
+general loading `lambda_g` multiplying a shared latent, so when the shared part
+vanishes (`c_shared -> 0`) there is **no funnel** — the earlier
+`lambda_g * theta_g` form sampled fine for the English–Spanish pairs (where
+`lambda_g` ≈ 1.9, far from 0) but funnelled badly on the Malaysian trilingual
+sample, where the shared dimension really is near zero. `lambda_g` is still
+reported (`= sqrt(c_shared)`) for continuity.
+
+`models/bilingual_dim_irt.stan` implements all three hypotheses via the data
+flags `estimate_general` / `estimate_specific`, for any number of languages
+`L >= 2` (it is a crossed random-effects generalisation of the old concept/word
+IRT in `archive/models/model1.stan`).
 
 ```{r setup, include=FALSE}
 library(glue)
