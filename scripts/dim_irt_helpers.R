@@ -140,7 +140,11 @@ exposure_language_matches <- function(language, exposure_language) {
 
 #' One row per (child_id, language) with `exposure_proportion` in [0, 1] for the
 #' requested target `languages`. `df_demogs` is `readRDS(here("data",
-#' "demographics.rds"))` with its nested `languages` list-column.
+#' "demographics.rds"))` with its nested `languages` list-column. Also carries
+#' `total_listed` (sum of the child's exposure proportions across ALL their
+#' listed languages, ~1 when the parent gave a complete breakdown) and
+#' `n_langs_listed`, so callers can tell an unlisted target language ("0%
+#' exposure") from a genuinely missing record.
 #'
 #' Joins downstream (here and in build_dim_irt_stan_data / build_pair_matrix)
 #' key on `child_id` alone, which is only safe if `child_id` is unique across
@@ -156,7 +160,7 @@ child_language_exposure <- function(df_demogs, languages) {
         "would silently mix different children. Key on (dataset_name, child_id) instead.")
   }
 
-  df_demogs |>
+  long <- df_demogs |>
     mutate(child_id = as.character(child_id)) |>
     select(child_id, age, dataset_name, languages) |>
     # Wordbank stores the nested exposure_proportion as integer / double / logical
@@ -173,14 +177,61 @@ child_language_exposure <- function(df_demogs, languages) {
     unnest(languages) |>
     filter(!is.na(exposure_language), !is.na(exposure_proportion),
            exposure_proportion <= 100) |>
-    mutate(exposure_proportion = exposure_proportion / 100) |>
+    mutate(exposure_proportion = exposure_proportion / 100)
+
+  # per-child total of ALL listed exposure (not just target languages) -- used
+  # downstream to decide whether an unlisted target language means "0% exposure"
+  # (child's listed exposures already sum to ~100) vs. genuinely missing.
+  total_listed <- long |>
+    group_by(child_id) |>
+    summarise(total_listed = sum(exposure_proportion),
+              n_langs_listed = n(), .groups = "drop")
+
+  long |>
     tidyr::expand_grid(target_language = languages) |>
     filter(exposure_language_matches(target_language, exposure_language)) |>
     group_by(child_id, language = target_language) |>
     summarise(age = first(age),
               dataset_name = first(dataset_name),
               exposure_proportion = first(exposure_proportion),
-              .groups = "drop")
+              .groups = "drop") |>
+    left_join(total_listed, by = "child_id")
+}
+
+# ---------------------------------------------------------------------------
+# Sample health screen -- run BEFORE fitting
+# ---------------------------------------------------------------------------
+
+#' Per-language diagnostics for a candidate `langs` sample: how many children
+#' have (near-)zero vocabulary in each language (a floor that leaves that
+#' language's ability factor unidentified) and how many have an exposure record.
+#'
+#' The Malaysian "trilingual" sample looked like independent lexicons only
+#' because English (54% of kids <5 words) and Mandarin (86%) were at the floor
+#' and only 22% had a Mandarin exposure record -- run this and eyeball
+#' `frac_floor` / `exposure_coverage` before trusting any rho.
+sample_health <- function(item_table, df_demogs, langs, floor_words = 5) {
+  kids <- item_table |>
+    filter(language %in% langs, item_kind == "word") |>
+    distinct(child_id, language) |>
+    count(child_id) |>
+    filter(n >= length(langs)) |>
+    pull(child_id)
+  exp_tbl <- child_language_exposure(df_demogs, langs)
+  purrr::map_dfr(langs, \(l) {
+    v <- item_table |>
+      filter(child_id %in% kids, language == l, item_kind == "word") |>
+      group_by(child_id) |>
+      summarise(n_produced = sum(produces, na.rm = TRUE), .groups = "drop")
+    tibble(
+      language = l,
+      n_children = length(kids),
+      vocab_median = median(v$n_produced),
+      frac_floor = mean(v$n_produced < floor_words),
+      exposure_coverage = mean(as.character(kids) %in%
+        (exp_tbl |> filter(language == l) |> pull(child_id)))
+    )
+  })
 }
 
 # ---------------------------------------------------------------------------
@@ -204,6 +255,18 @@ build_pair_matrix <- function(item_table, df_demogs, langs,
                               item_p_bounds = c(0.02, 0.98),
                               coarse_lex_class = TRUE) {
   stopifnot(length(langs) >= 2)   # works for any number of languages, not just pairs
+
+  health <- sample_health(item_table, df_demogs, langs)
+  bad <- health |> filter(frac_floor > 0.30 | exposure_coverage < 0.60)
+  if (nrow(bad)) {
+    warning("build_pair_matrix: shaky sample -- ",
+            paste(sprintf("%s (%.0f%% <5 words, %.0f%% have exposure)",
+                          bad$language, 100 * bad$frac_floor,
+                          100 * bad$exposure_coverage), collapse = "; "),
+            ". A near-floor language's ability factor is unidentified; rho will ",
+            "be attenuated toward 0. Inspect sample_health() before trusting the fit.",
+            call. = FALSE)
+  }
 
   df_pair <- item_table |> filter(language %in% langs)
 
@@ -342,14 +405,32 @@ build_dim_irt_stan_data <- function(obs, exposure, langs,
                 by = "child_id") |>
       pull(exposure_proportion)
   })
+
+  # A parent who lists e.g. "Malay 90 / English 10" and is silent about Mandarin
+  # means the child has ~0% Mandarin exposure, not "missing". Impute an unlisted
+  # target language to 0 whenever the child's listed exposures already sum to
+  # ~1; only genuinely uninformative rows fall back to complement (L=2) / median.
+  total_listed <- tibble(child_id = child_lvl) |>
+    left_join(exposure |> distinct(child_id = as.character(child_id), total_listed),
+              by = "child_id") |>
+    pull(total_listed)
+  complete_profile <- !is.na(total_listed) & total_listed >= 0.95
+  for (l in seq_len(ncol(exp_mat))) {
+    exp_mat[complete_profile & is.na(exp_mat[, l]), l] <- 0
+  }
+
   if (length(langs) == 2) {
-    # exactly the old behaviour: fill a missing language from the complement
     exp_mat[, 1] <- coalesce(exp_mat[, 1], 1 - exp_mat[, 2], 0.5)
     exp_mat[, 2] <- coalesce(exp_mat[, 2], 1 - exp_mat[, 1], 0.5)
   } else {
     for (l in seq_len(ncol(exp_mat))) {
       exp_mat[, l] <- coalesce(exp_mat[, l], median(exp_mat[, l], na.rm = TRUE), 0.5)
     }
+  }
+  n_zero_imputed <- sum(complete_profile & rowSums(exp_mat == 0, na.rm = TRUE) > 0)
+  if (n_zero_imputed) {
+    message("build_dim_irt_stan_data: imputed 0%% exposure for an unlisted ",
+            "language in ", n_zero_imputed, " children with a complete profile")
   }
 
   exposure_c <- scale(exp_mat, scale = FALSE)

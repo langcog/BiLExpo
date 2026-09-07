@@ -83,6 +83,11 @@ item_table <- build_item_table(
 )
 df_demogs <- readRDS(here("data", "demographics.rds"))
 
+# screen the sample FIRST: a language where many children are at the vocabulary
+# floor, or where few have an exposure record, cannot support this analysis
+# (rho gets attenuated toward 0 by measurement, not by structure)
+sample_health(item_table, df_demogs, langs)
+
 pair <- build_pair_matrix(
   item_table, df_demogs, langs,
   min_items_per_child = params$min_items_per_child
@@ -247,10 +252,16 @@ Both pairs land in the same qualitative regime — decisively **rejecting both**
 `rho → 1` (unidimensional) **and** `rho → 0` (separable lexicons) — but the
 British/European pair shows a *higher* shared-variance share (~71% vs ~58%) and
 a much stronger residual age effect. Whether that's a real difference between
-these two bilingual populations (different countries, dataset mixes, age
-ranges) or an artifact of the item thinning / sample composition is open; the
-Malaysian English/Malay/Mandarin trilingual sample (n=569, would need `L=3` in
-the Stan model) and a full-item, unthinned refit of both pairs are the natural
-next checks.
+these two bilingual populations or an artifact of item thinning / CDI floor
+(the British/European sample has 10–13% of children below 5 words vs. ~2% for
+American English–Spanish) / sample composition is open.
+
+The Malaysian English/Malay/Mandarin trilingual sample (n=569) was fit with the
+`L`-generalised model but the result — near-zero `rho` across all three pairs —
+is an **artifact of CDI floor effects** (54% / 35% / 86% of children below 5
+words in English / Malay / Mandarin; Mandarin exposure known for only 22%).
+`sample_health()` flags this, and `build_pair_matrix()` now warns automatically.
+No usable multilingual (3+) sample exists in the current export. See
+`dimensionality_writeup.md`.
 
 Saved: `models/o5_bayes_ENGB-ESEU_summary.csv`, `models/o5_bayes_SBC_calibration.csv`.
