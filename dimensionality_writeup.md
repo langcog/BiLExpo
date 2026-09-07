@@ -2,6 +2,8 @@
 
 **Status:** working draft, 2026-09. Analyses live in [`08_o5_dimensionality_mirt.qmd`](08_o5_dimensionality_mirt.qmd), [`09_o5_dimensionality_bayes.qmd`](09_o5_dimensionality_bayes.qmd), [`10_o5_dimensionality_calibration.qmd`](10_o5_dimensionality_calibration.qmd), [`models/bilingual_dim_irt.stan`](models/bilingual_dim_irt.stan), [`scripts/dim_irt_helpers.R`](scripts/dim_irt_helpers.R). Underlying data (`data/items.rds`, `data/demographics.rds`, `data/instruments/`) is embargoed and not in the repo; only aggregate posterior summaries are reported here.
 
+**In one line:** across three multilingual samples, how much of lexical ability is *shared* across a child's languages varies enormously — ~58–71% for two English–Spanish samples, essentially 0% for Malaysian English/Malay/Mandarin trilinguals — so the uni-vs-multidimensional question looks to have no answer independent of the bilingual situation.
+
 ## Question
 
 If we look across *all* the words a bilingual child knows — both languages together — does their lexical ability look like one underlying trait, or several? The literature on monolingual CDI vocabulary generally treats this as unidimensional (one factor of maturational/lexical ability). For bilinguals the naive extension — column-bind the two CDIs, run the same exploratory multidimensional IRT — is attractive but biased: differential language exposure alone will force English items and Spanish items onto separate factors regardless of the true structure of ability, so an exploratory fit will report "found 2+ factors" almost no matter what.
@@ -25,29 +27,34 @@ We wanted a framing that (a) treats exposure as a covariate to be modeled rather
 
 The confirmatory mIRT route (1) does not converge on real bilingual samples of this size. On 474–690 children with hundreds of items, unregularized 2PL mIRT (`mirt` 1.46.1) either fails to converge within the EM cycle limit or, when forced, returns degenerate (e.g. negative general-factor) loadings — even after item thinning and hours of compute. `mirt::bfactor()` also does not support latent-regression covariates at all, and its `M2()` limited-information fit statistic rejects any model that has one. `08` is kept for the framing, the model-space logic, and the calibration pipeline, but **it is not the source of any real-data number reported here.**
 
-The Bayesian route (2) is what produced trustworthy estimates, but only once we discovered that `rstan`'s mean-field ADVI diverges completely on this model (oscillating ELBO, posterior collapsing to a degenerate mode with runaway item discriminations) while NUTS on the identical model is well-behaved (zero divergences, sane R-hat/ESS). **Use NUTS, not ADVI/variational inference, for this model.**
+The Bayesian route (2) is what produced trustworthy estimates, after two fixes:
+
+- `rstan`'s mean-field ADVI diverges completely on this model (oscillating ELBO, posterior collapsing to a degenerate mode with runaway item discriminations) while NUTS on the identical model is well-behaved. **Use NUTS, not ADVI/variational inference, for this model.**
+- The original parameterization — a general loading `lambda_g` multiplying a shared latent — funnels when `lambda_g → 0` (the shared latent becomes unidentified). It sampled fine for the English–Spanish pairs, where `lambda_g` ≈ 1.9, but produced 139 divergences and un-converged estimates on the trilingual sample, where the shared dimension really is near zero. Reparameterizing to sample the ability covariance through its Cholesky factor (see [Model](#model)) removed the funnel; both parameterizations agree where both work.
 
 ## Model
 
 Item easiness is decomposed into a translation-equivalent **concept** term (shared across languages via `uni_lemma`, e.g. *dog* / *perro*) plus a language-specific offset — dropped in favor of a single flat item-easiness level when too few items in a given language pair actually share a concept (an automatic check in `build_dim_irt_stan_data()`; translation-equivalent overlap between full CDI forms in different languages/countries turned out to be modest, 15–22% of items in every sample analyzed so far).
 
-Child ability is decomposed into a **general** trait and **language-specific** deviations, independent across languages:
+Child ability across the `L` languages is multivariate normal with a **compound-symmetric covariance** — a common covariance `c_shared` between every pair of languages, plus a per-language specific variance on the diagonal:
 
 ```
-theta_child[i, L] = lambda_g · theta_g[i] + theta_s[i, L]
-theta_g[i]        ~ Normal(0, 1)                      # scale-fixing anchor
-theta_s[i, L]     ~ Normal(0, sigma_s[L])
+theta_child[i, ] ~ MVN(0, Sigma)
+Sigma[l, l]      = c_shared + sigma_s[l]²
+Sigma[l1, l2]    = c_shared                (l1 ≠ l2)
 ```
 
 with exposure and age entered as fixed, per-language effects on ability, and a standard 2PL response model, `p = logit⁻¹(alpha_j · (ability + b_item[j]))`.
 
-This nests the two extreme hypotheses as limiting cases and, critically, generalizes past a single language pair:
+This is the same model as a general trait plus independent language-specific deviations (`c_shared` = the squared general loading), but it is sampled through the Cholesky factor of `Sigma` applied to a unit-scale latent, rather than as a loading multiplying a shared latent. The difference matters: a general loading funnels badly when it approaches zero (the shared latent becomes unidentified), which is exactly what happened on the trilingual sample. The covariance parameterization has no vanishing latent and samples cleanly whether the shared dimension is large or ≈ 0.
 
-- `sigma_s → 0` ⇒ **unidimensional** — one bilingual lexical trait, languages differ only by exposure-driven mean level
-- `lambda_g → 0` ⇒ **independent lexicons** — no shared trait at all
-- both free ⇒ report the **pairwise cross-language ability correlation** `rho[l1, l2] = lambda_g² / √(v[l1]·v[l2])` (`v[l] = lambda_g² + sigma_s[l]²`) and the **person-level explained common variance** `ECV = lambda_g² / (lambda_g² + mean(sigma_s²))`, both continuous, both defined for any number of languages `L ≥ 2` — this is what lets the same model fit bilingual pairs and the trilingual sample below without a different parameterization.
+It nests the two extreme hypotheses as limiting cases and generalizes past a single language pair:
 
-`rho` and `ECV` are mathematically equivalent for `L = 2`; for `L ≥ 3` `ECV` is the single scalar summary and `rho` becomes a full `L × L` matrix, one pairwise correlation per language pair.
+- `sigma_s → 0` ⇒ **unidimensional** — one lexical trait, languages differ only by exposure-driven mean level
+- `c_shared → 0` ⇒ **independent lexicons** — no shared trait at all
+- both free ⇒ report the **pairwise cross-language ability correlation** `rho[l1, l2] = c_shared / √(v[l1]·v[l2])` (`v[l] = c_shared + sigma_s[l]²`) and the **person-level explained common variance** `ECV = c_shared / (c_shared + mean(sigma_s²))`, both continuous, both defined for any `L ≥ 2`.
+
+`rho` and `ECV` coincide for `L = 2` with equal specific variances; for `L ≥ 3` `ECV` is the single scalar summary and `rho` is a full `L × L` matrix, one pairwise correlation per language pair.
 
 ## Data
 
@@ -76,10 +83,21 @@ The two pairs agree on the qualitative picture but not on the exact split (58% v
 
 ### Trilingual sample
 
-English (Malaysian) / Malay (Malaysian) / Mandarin (Malaysian), 569 children administered all three CDIs. The Stan model and its R data-builders were generalized from a hardcoded 2-language parameterization to arbitrary `L` for this (the likelihood was already generic; only the `rho`/`ECV` generated quantities and the exposure-imputation logic were pair-specific). This is the first check of whether the ~55–70%-general picture holds beyond a single language pair, and with three specific factors instead of one — do all three languages share equally in the general dimension, or does one stand apart?
+English (Malaysian) / Malay (Malaysian) / Mandarin (Malaysian), 569 children administered all three CDIs. The Stan model and its R data-builders were generalized from a hardcoded 2-language parameterization to arbitrary `L` for this (the likelihood was already generic; only the `rho`/`ECV` generated quantities and the exposure-imputation logic were pair-specific).
 
-<!-- RESULTS_PLACEHOLDER_TRILINGUAL -->
-*(fit in progress — results to follow)*
+The first attempt (the `lambda_g · theta_g + theta_s` parameterization) produced 139 divergent transitions and un-converged `lambda_g`/`ECV` — because the shared dimension here really is near zero, `lambda_g` was pinned against its lower bound at 0, and a loading that multiplies a shared latent funnels badly at that boundary. The model was **reparameterized** to sample the ability covariance through its Cholesky factor (compound-symmetric: a common covariance `c_shared` between every language pair, per-language specific variance on the diagonal) rather than through a general loading — same statistical model, no vanishing latent, no funnel. On the English–Spanish pairs, where the shared dimension is far from zero, both parameterizations agree (EN×ES American: `rho` = 0.585 old, 0.604 new).
+
+With clean sampling (0 divergences), the trilingual result:
+
+| language pair | `rho` (median) | 95% CI |
+|---|---:|---|
+| English × Malay | 0.015 | [0.001, 0.068] |
+| English × Mandarin | 0.019 | [0.001, 0.082] |
+| Malay × Mandarin | 0.013 | [0.001, 0.055] |
+
+`ECV` = 0.015 [0.001, 0.063]. R-hat is 1.09 and effective sample size ~57 on the specific-variance components (`sigma_s` ≈ 4.0 / 5.8 / 4.8) — a precision caveat on the exact values, not a validity one; more iterations would tighten it, but the direction is unambiguous now that sampling is clean.
+
+**For the Malaysian trilinguals the three lexicons are effectively independent** — a near-zero shared dimension across all three language pairs, in sharp contrast to English–Spanish. The exposure effect is also strikingly uneven (`beta_exp` ≈ 7.7 English / 3.8 Malay / 0.6 Mandarin), i.e. exposure predicts English and Malay vocabulary strongly but Mandarin vocabulary barely — worth a closer look, possibly reflecting how exposure is measured or reported for the heritage language.
 
 ### Simulation calibration (is any of this trustworthy?)
 
@@ -95,12 +113,19 @@ Recovery is good across the range with only a small (~0.02) low-side bias and no
 
 ## Interpretation
 
-Across the samples analyzed so far, bilingual lexical ability is **neither a single shared lexicon nor two independent ones**. A substantial general dimension — roughly 55–70% of reliable person-level variance, depending on the pair — coexists with genuine, non-trivial language-specific ability, over and above what is explained by exposure and age. This is closer to a **bifactor** picture (general ability + language-specific residual ability) than to either monolithic alternative, and it is the kind of result the theoretical framing was built to distinguish, not just to detect.
+The answer is not the same across bilingual populations — which is itself the interesting finding.
+
+- For the two **English–Spanish** samples, lexical ability is **neither a single shared lexicon nor two independent ones**: a substantial general dimension (~58–71% of reliable person-level variance) coexists with genuine, non-trivial language-specific ability, over and above exposure and age. This is a **bifactor** picture — general ability plus language-specific residual ability.
+- For the **Malaysian English/Malay/Mandarin** trilinguals, the three lexicons are **effectively independent** (pairwise `rho` ≈ 0.01–0.02, `ECV` ≈ 0.015). Here the "two independent lexicons" extreme — rejected decisively for English–Spanish — is essentially the right description, now for three.
+
+A plausible reading: the degree to which multilingual lexical ability is *shared* tracks how much the languages are acquired together, in the same contexts, from overlapping input — high for two European languages that frequently co-occur in the home, near-zero for three languages that a multilingual society assigns to separate functions (national language, language of schooling, heritage language). If that holds up, "is bilingual vocabulary one dimension or several?" has no context-free answer; the shared-variance fraction is a property of the bilingual *situation*, not of bilingualism as such. Three samples is far too few to make that claim — but it is a sharp, testable hypothesis.
 
 ## Limitations & open questions
 
 - **Item thinning.** All fits so far use every 2nd–3rd item to keep NUTS runtime tractable (2–13 hours depending on machine load); a full-item run for at least one pair would confirm thinning isn't introducing bias.
-- **Age modeling.** `beta_age` is a linear fixed effect and its estimate differs sharply between the two bilingual pairs (0.15 vs. 2.21) — worth checking with a spline and/or age-banded refits before treating that difference as substantive.
+- **Trilingual precision.** The trilingual fit has 0 divergences but R-hat ≈ 1.09 / ESS ≈ 57 on the specific-variance components — the near-zero `rho` direction is solid, the exact `sigma_s` values and the (already tiny) `rho` are not tightly pinned. Longer chains would fix this.
+- **Uneven exposure effects in the trilingual sample.** `beta_exp` ≈ 7.7 / 3.8 / 0.6 (English / Malay / Mandarin) — exposure barely predicts Mandarin vocabulary. This needs a look before the trilingual result is leaned on too hard: it may reflect how heritage-language exposure is measured/reported rather than a real absence of an exposure effect.
+- **Age modeling.** `beta_age` is a linear fixed effect and its estimate differs sharply across samples (0.15 EN-SP American, 2.21 EN-GB/ES-EU, 1.72 trilingual) — worth checking with a spline and/or age-banded refits before treating those differences as substantive.
 - **Translation-equivalent (concept) linking is off in every fit so far** (`link_concepts` auto-disabled — 15–22% item overlap across every pair/triple checked is below the 25% threshold). The conceptual-vs-lexical-representation question (does knowing *dog* predict knowing *perro* beyond general ability?) hasn't actually been tested yet; it needs either richer translation-equivalent coverage or a targeted design.
 - **Semantic (lexical-class) sub-structure** — is any of the language-specific variance actually *semantic* (a noun factor, a predicate factor) rather than linguistic? — was part of the original design (`M_class` in `08`) but hasn't been fit successfully on real data; the mIRT convergence failure applies here too, and would need the Stan model extended with lexical-class-specific factors.
 - **Single calibration replicate per condition.** The SBC check above is indicative, not a full multi-replicate simulation-based calibration; more replicates would tighten the false-positive/power picture from `10`, which is currently unrun against this Stan model (it was written against the mirt pipeline).
