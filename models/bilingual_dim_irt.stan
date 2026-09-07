@@ -42,7 +42,9 @@ data {
   array[N] int<lower=0,upper=1> y;      // produces
   array[N] int<lower=1,upper=I> child;
   array[N] int<lower=1,upper=J> item;
-  vector[N] age_sc;                     // centred/scaled age at administration
+  vector[N] age_sc;                     // centred/scaled age (for the age x exposure term)
+  int<lower=1> K_age;                   // age-spline basis dimension (1 => linear)
+  matrix[N, K_age] age_spline;          // natural-spline basis of age_sc
 
   array[J] int<lower=1,upper=C> concept;    // item -> concept (translation equiv.)
   array[J] int<lower=1,upper=L> item_lang;  // item -> language
@@ -84,8 +86,8 @@ parameters {
 
   // ---- exposure / age fixed effects (per language) ----
   vector[L] beta_exp;
-  real beta_age;
-  vector[L] beta_age_exp;
+  vector[K_age] beta_age;              // age-spline coefficients (scalar when K_age==1)
+  vector[L] beta_age_exp;              // age x exposure, kept linear in age
 }
 
 transformed parameters {
@@ -140,7 +142,7 @@ model {
       int l = obs_lang[n];
       real ability = theta_ability[i, l]
                      + beta_exp[l]     * exposure_c[i, l]
-                     + beta_age        * age_sc[n]
+                     + dot_product(age_spline[n], beta_age)
                      + beta_age_exp[l] * age_sc[n] * exposure_c[i, l];
       eta[n] = exp(logalpha[j]) * (ability + b_item[j]);
     }
@@ -178,7 +180,7 @@ generated quantities {
       int l = obs_lang[n];
       real ability = theta_ability[i, l]
                      + beta_exp[l]     * exposure_c[i, l]
-                     + beta_age        * age_sc[n]
+                     + dot_product(age_spline[n], beta_age)
                      + beta_age_exp[l] * age_sc[n] * exposure_c[i, l];
       log_lik[n] = bernoulli_logit_lpmf(
         y[n] | exp(logalpha[j]) * (ability + b_item[j]));

@@ -362,8 +362,9 @@ build_dim_irt_stan_data <- function(obs, exposure, langs,
                                     estimate_general = 1L,
                                     estimate_specific = 1L,
                                     link_concepts = NA,
+                                    age_spline_df = 3L,
                                     compute_loglik = 1L) {
-  stopifnot(length(langs) >= 2)
+  stopifnot(length(langs) >= 2, age_spline_df >= 1L)
 
   obs <- obs |>
     mutate(child_id = as.character(child_id),
@@ -392,6 +393,14 @@ build_dim_irt_stan_data <- function(obs, exposure, langs,
            lang_ix  = match(language, langs),
            age_sc   = as.numeric(scale(age)))
   stopifnot(!anyNA(obs$lang_ix))
+
+  # age-spline basis (df = 1 -> effectively linear); passed as data so Stan just
+  # takes a dot product with the coefficient vector
+  age_spline <- if (age_spline_df <= 1L) {
+    matrix(obs$age_sc, ncol = 1)
+  } else {
+    unclass(splines::ns(obs$age_sc, df = age_spline_df))
+  }
 
   item_tbl <- obs |>
     distinct(item_ix, uid, concept_key, lang_ix) |>
@@ -442,6 +451,7 @@ build_dim_irt_stan_data <- function(obs, exposure, langs,
       C = length(concept_lvl), L = length(langs),
       y = as.integer(obs$y), child = obs$child_ix, item = obs$item_ix,
       age_sc = obs$age_sc,
+      K_age = ncol(age_spline), age_spline = age_spline,
       concept = item_tbl$concept_ix, item_lang = item_tbl$lang_ix,
       exposure_c = exposure_c, dominant_lang = as.integer(dominant_lang),
       estimate_general = as.integer(estimate_general),

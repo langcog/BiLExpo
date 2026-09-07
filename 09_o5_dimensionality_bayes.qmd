@@ -6,6 +6,7 @@ params:
   language_b: "Spanish (Mexican)"
   min_items_per_child: 20
   thin_items: 1           # keep every k-th item/language; full EN-SP is ~1665 items
+  age_spline_df: 3        # natural-spline df for the age effect on ability (1 = linear)
   fit_models: false
   method: "sample"        # "sample" (NUTS). ADVI/pathfinder are unreliable here — see below.
   link_concepts: "auto"   # "auto" | TRUE | FALSE — TE linking only helps with lots of overlap
@@ -111,9 +112,9 @@ link <- if (identical(params$link_concepts, "auto")) NA else
 prep <- build_dim_irt_stan_data(
   obs, exposure, langs,
   estimate_general = 1L, estimate_specific = 1L,
-  link_concepts = link, compute_loglik = 1L
+  link_concepts = link, age_spline_df = params$age_spline_df, compute_loglik = 1L
 )
-str(prep$data[c("N", "I", "J", "C", "link_concepts")])
+str(prep$data[c("N", "I", "J", "C", "K_age", "link_concepts")])
 ```
 
 # Fit the three nested variants
