@@ -1,0 +1,271 @@
+---
+title: "O5 Dimensionality — Bayesian crossed random-effects IRT"
+format: html
+params:
+  language_a: "English (American)"
+  language_b: "Spanish (Mexican)"
+  min_items_per_child: 20
+  thin_items: 1           # keep every k-th item/language; full EN-SP is ~1665 items
+  age_spline_df: 3        # natural-spline df for the age effect on ability (1 = linear)
+  fit_models: false
+  method: "sample"        # "sample" (NUTS). ADVI/pathfinder are unreliable here — see below.
+  link_concepts: "auto"   # "auto" | TRUE | FALSE — TE linking only helps with lots of overlap
+---
+
+::: {.callout-important}
+**Use NUTS, not ADVI.** On the real EN–SP data (474 children) rstan's meanfield
+VB diverged completely — ELBO oscillating, `rho`/`ecv`/`lambda_g` collapsing to 0.
+NUTS on the same model is well-behaved (0 divergences, coherent posterior). The
+mirt route in `08` also fails to converge on this sample. This file is the one
+that produces a trustworthy number, at the cost of a multi-hour run.
+:::
+
+# Idea
+
+Rather than let differential exposure masquerade as a factor (as an exploratory
+mIRT would), model it, and turn the dimensionality question into a
+**variance-components** question:
+
+- item easiness = translation-equivalent **concept** term (shared by `dog` /
+  `perro` via `uni_lemma`) + **language-specific offset** (auto-collapsed to one
+  flat item level when too few items link across languages);
+- child ability across the `L` languages is `MVN(0, Sigma)` with a
+  **compound-symmetric** covariance — a common `c_shared` between every language
+  pair, plus a per-language specific variance `sigma_s[L]^2` on the diagonal;
+- exposure + age enter as fixed per-language effects.
+
+Then
+
+- `sigma_s -> 0`   ⇒ unidimensional  (`rho -> 1`)
+- `c_shared -> 0`  ⇒ independent lexicons (`rho -> 0`)
+- both free        ⇒ estimate `rho` (pairwise) and `ECV` directly — continuous.
+
+The covariance is parameterised through its Cholesky factor rather than a
+general loading `lambda_g` multiplying a shared latent, so when the shared part
+vanishes (`c_shared -> 0`) there is **no funnel** — the earlier
+`lambda_g * theta_g` form sampled fine for the English–Spanish pairs (where
+`lambda_g` ≈ 1.9, far from 0) but funnelled badly on the Malaysian trilingual
+sample, where the shared dimension really is near zero. `lambda_g` is still
+reported (`= sqrt(c_shared)`) for continuity.
+
+`models/bilingual_dim_irt.stan` implements all three hypotheses via the data
+flags `estimate_general` / `estimate_specific`, for any number of languages
+`L >= 2` (it is a crossed random-effects generalisation of the old concept/word
+IRT in `archive/models/model1.stan`).
+
+```{r setup, include=FALSE}
+library(glue)
+library(here)
+library(cmdstanr)
+library(posterior)
+library(loo)
+library(tidyverse)
+
+source(here("scripts", "dim_irt_helpers.R"))
+
+theme_set(
+  theme_bw() +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank(),
+          strip.background = element_blank(),
+          legend.position = "bottom")
+)
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+```
+
+# Data prep (shares helpers with `08_o5_dimensionality_mirt.qmd`)
+
+```{r}
+langs <- c(params$language_a, params$language_b)
+
+item_table <- build_item_table(
+  items       = readRDS(here("data", "items.rds")),
+  instruments = load_instruments()
+)
+df_demogs <- readRDS(here("data", "demographics.rds"))
+
+# screen the sample FIRST: a language where many children are at the vocabulary
+# floor, or where few have an exposure record, cannot support this analysis
+# (rho gets attenuated toward 0 by measurement, not by structure)
+sample_health(item_table, df_demogs, langs)
+
+pair <- build_pair_matrix(
+  item_table, df_demogs, langs,
+  min_items_per_child = params$min_items_per_child
+)
+
+if (params$thin_items > 1) {
+  keep_uid <- pair$item_lookup |> group_by(language) |>
+    filter(row_number() %% params$thin_items == 0) |> pull(uid)
+  pair$resp        <- pair$resp[, keep_uid, drop = FALSE]
+  pair$item_lookup <- pair$item_lookup |> filter(uid %in% keep_uid) |>
+    arrange(match(uid, colnames(pair$resp)))
+}
+
+# long form the Stan model wants: one row per (child, item)
+obs <- wide_to_long_obs(pair$resp, pair$item_lookup, pair$covdata)
+exposure <- child_language_exposure(df_demogs, langs)
+
+link <- if (identical(params$link_concepts, "auto")) NA else
+          as.integer(isTRUE(params$link_concepts))
+
+prep <- build_dim_irt_stan_data(
+  obs, exposure, langs,
+  estimate_general = 1L, estimate_specific = 1L,
+  link_concepts = link, age_spline_df = params$age_spline_df, compute_loglik = 1L
+)
+str(prep$data[c("N", "I", "J", "C", "K_age", "link_concepts")])
+```
+
+# Fit the three nested variants
+
+Runtime scales with item count. Rough NUTS cost (4 chains, 1000+1000): ~1 h at
+150 items, ~3–4 h at 400, 8 h+ at the full 1665. Prototype with
+`thin_items: 4`; do the headline run unthinned overnight. The variance
+components (`sigma_delta`, `sigma_s`) mix slowest — watch their `rhat` / `ess`.
+
+```{r fit, eval=params$fit_models}
+mod <- cmdstan_model(here("models", "bilingual_dim_irt.stan"))
+
+run_variant <- function(g, s, tag) {
+  d <- modifyList(prep$data, list(estimate_general = g, estimate_specific = s))
+  fit <- mod$sample(data = d, seed = 123, chains = 4, parallel_chains = 4,
+                    iter_warmup = 1000, iter_sampling = 1000,
+                    adapt_delta = 0.95, max_treedepth = 12)
+  fit$save_object(here("models", glue("o5_bayes_{tag}_{make.names(params$language_a)}.rds")))
+  print(fit$diagnostic_summary())
+  fit
+}
+
+fit_full <- run_variant(1, 1, "full")      # general + specific  -> rho, ecv
+fit_uni  <- run_variant(1, 0, "unidim")    # sigma_s == 0        -> nested null
+fit_two  <- run_variant(0, 1, "twolex")    # lambda_g == 0       -> nested null
+```
+
+::: {.callout-note}
+**Result, EN (American) × ES (Mexican), 474 children, 554 items** (thinned 1-in-3
+from 1665; `link_concepts = 0`; 4 chains × 1000, 0 divergences, `rho`/`ecv`
+`n_eff` ≈ 1300, `rhat` = 1.00):
+
+| quantity | median | 95% CI |
+|---|---|---|
+| `rho`  (cross-language ability correlation) | **0.585** | 0.519–0.642 |
+| `ecv`  (person-level explained common variance) | **0.582** | 0.515–0.640 |
+| `lambda_g` | 1.85 | 1.67–2.03 |
+| `sigma_s` (EN / ES specific SD) | 1.74 / 1.37 | — |
+
+A **strong common lexical-ability dimension (~58% of reliable person variance)
+plus substantial, genuinely language-specific ability (~40%)**. The posterior
+excludes both `rho`→1 (single dimension) and `rho`→0 (independent lexicons); the
+`unidim` and `twolex` nested fits are not credible. `beta_exp` ≈ 5.4 / 3.4
+(exposure strongly shifts which language's words a child produces); `beta_age`
+≈ 0.15 [−0.05, 0.35] (weak once exposure + general ability are in — a spline on
+age would be a cleaner robustness check).
+
+Still to do: `10`'s calibration (SBC on this model — the pipeline may *over*state
+`rho`); a full-item run; a `link_concepts = 1` robustness fit on the ~95
+translation-equivalent items; other language pairs.
+
+Saved: `models/o5_bayes_EN-SP_summary.csv`, `models/o5_bayes_EN-SP_full_draws.csv`.
+:::
+
+```{r}
+rd <- \(tag) readRDS(here("models", glue("o5_bayes_{tag}_{make.names(params$language_a)}.rds")))
+fit_full <- rd("full"); fit_uni <- rd("unidim"); fit_two <- rd("twolex")
+```
+
+# The answer, read straight off the full model
+
+```{r}
+fit_full$summary(c("lambda_g", "sigma_s", "rho", "ecv",
+                   "beta_exp", "beta_age", "sigma_concept", "sigma_delta"))
+
+as_draws_df(fit_full$draws(c("rho", "ecv"))) |>
+  pivot_longer(c(rho, ecv)) |>
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 60) +
+  facet_wrap(~name, scales = "free") +
+  labs(x = NULL, y = NULL,
+       title = "Posterior: correlation of the two language abilities, and person-level ECV")
+```
+
+- `rho` near 1 and `ecv` near 1 ⇒ **unidimensional**: one general trait,
+  languages differ only by exposure-driven level.
+- `rho` clearly below ~.7, `sigma_s` away from 0 ⇒ **separable lexicons**.
+- Intermediate `ecv` (~.6–.85) ⇒ strong common trait **plus** non-trivial
+  language-specific ability — report the number, don't binarise.
+
+# Model comparison (LOO), as a cross-check
+
+```{r}
+loo_compare(list(
+  full   = fit_full$loo(),
+  unidim = fit_uni$loo(),
+  twolex = fit_two$loo()
+))
+```
+
+If `unidim` is within ~2 SE of `full`, the language-specific factors aren't
+earning their keep. If `full` clearly beats both, general + specific is the right
+description.
+
+# Robustness
+
+- **Age.** Re-fit within 6-month age bands (drop `beta_age*`), confirm
+  `rho` / `ecv` are stable.
+- **Concept linking.** Compare to `link_concepts: false` — if `rho` drops a lot,
+  translation-equivalent structure is doing real work (conceptual vs lexical
+  representation).
+- **NUTS vs Pathfinder.** Iterate with `method: "pathfinder"` but report the NUTS
+  fit — VI understates `sigma_s` uncertainty, the parameter in question.
+- Feed `theta_child[,1]` / `theta_child[,2]` into `02_exposure_models.qmd` as a
+  consistency check against the two-stage pipeline.
+
+# SBC calibration (answers `10`'s open question)
+
+One-rep-per-condition recovery check: simulate CDI responses from a **known**
+`rho_true`, using the real EN–SP form design / age / exposure and empirical item
+difficulties (from marginal endorsement rates) + discriminations drawn to match
+the fitted `sigma_logalpha` (~0.27), then refit the full model.
+
+```{r, eval=FALSE}
+# models/o5_bayes_SBC_calibration.csv
+#  rho_true  rho_hat_median   95% CI            covers?
+#      0.30      0.279       [0.191, 0.364]        yes
+#      0.60      0.576       [0.512, 0.636]        yes
+#      0.90      0.882       [0.858, 0.902]        yes  (Rhat 1.01, weaker ESS)
+```
+
+Recovery is good across the range, with a small (~0.02) low-side bias and no
+systematic inflation. **This means the headline `rho`/`ecv` numbers below can be
+read at face value** — the earlier worry (carried over from the mirt route in
+`08`, which *does* overstate multidimensionality-adjacent quantities) does not
+transfer to this Stan model.
+
+# Cross-pair replication
+
+| pair | children | items | `rho` (median, 95% CI) | `ecv` | divergences |
+|---|---|---|---|---|---|
+| English (American) × Spanish (Mexican) | 474 | 554 | 0.585 [0.519, 0.642] | 0.582 | 0 |
+| English (British) × Spanish (European) | 690 | ~420 | 0.708 [0.664, 0.747] | 0.706 | 0 |
+| Norwegian × Polish | 112 | 697 | 0.593 [0.428, 0.709] | 0.586 | 0 |
+
+All three land in the same regime — decisively **rejecting both** `rho → 1`
+(unidimensional) **and** `rho → 0` (separable lexicons). **Norwegian × Polish**
+(Germanic + Slavic, no English, a different bilingual population) sits at 0.59,
+right between the two English–Spanish estimates — the ~58–71% picture is not
+specific to English–Spanish. The wide interval is n = 112. The British/European
+sample's higher point estimate (0.71) coincides with its higher CDI floor
+(10–13% of children below 5 words vs. 2–5% elsewhere); direction of that
+relationship (does the floor attenuate the *other* two?) is unresolved.
+
+The Malaysian English/Malay/Mandarin trilingual sample (n=569) was fit with the
+`L`-generalised model but the result — near-zero `rho` across all three pairs —
+is an **artifact of CDI floor effects** (54% / 35% / 86% of children below 5
+words in English / Malay / Mandarin; Mandarin exposure known for only 22%).
+`sample_health()` flags this, and `build_pair_matrix()` now warns automatically.
+No usable multilingual (3+) sample exists in the current export. See
+`dimensionality_writeup.md`.
+
+Saved: `models/o5_bayes_ENGB-ESEU_summary.csv`, `models/o5_bayes_NO-PL_summary.csv`,
+`models/o5_bayes_SBC_calibration.csv`.
