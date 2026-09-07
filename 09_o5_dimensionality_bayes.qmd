@@ -244,18 +244,20 @@ transfer to this Stan model.
 
 # Cross-pair replication
 
-| pair | children | items | `rho` (median, 95% CI) | `ecv` | `beta_age` |
+| pair | children | items | `rho` (median, 95% CI) | `ecv` | divergences |
 |---|---|---|---|---|---|
-| English (American) × Spanish (Mexican) | 474 | 554 | 0.585 [0.519, 0.642] | 0.582 | 0.15 [−0.05, 0.35] |
-| English (British) × Spanish (European) | 690 | ~420 | 0.708 [0.664, 0.747] | 0.706 | 2.21 [2.03, 2.39] |
+| English (American) × Spanish (Mexican) | 474 | 554 | 0.585 [0.519, 0.642] | 0.582 | 0 |
+| English (British) × Spanish (European) | 690 | ~420 | 0.708 [0.664, 0.747] | 0.706 | 0 |
+| Norwegian × Polish | 112 | 697 | 0.593 [0.428, 0.709] | 0.586 | 0 |
 
-Both pairs land in the same qualitative regime — decisively **rejecting both**
-`rho → 1` (unidimensional) **and** `rho → 0` (separable lexicons) — but the
-British/European pair shows a *higher* shared-variance share (~71% vs ~58%) and
-a much stronger residual age effect. Whether that's a real difference between
-these two bilingual populations or an artifact of item thinning / CDI floor
-(the British/European sample has 10–13% of children below 5 words vs. ~2% for
-American English–Spanish) / sample composition is open.
+All three land in the same regime — decisively **rejecting both** `rho → 1`
+(unidimensional) **and** `rho → 0` (separable lexicons). **Norwegian × Polish**
+(Germanic + Slavic, no English, a different bilingual population) sits at 0.59,
+right between the two English–Spanish estimates — the ~58–71% picture is not
+specific to English–Spanish. The wide interval is n = 112. The British/European
+sample's higher point estimate (0.71) coincides with its higher CDI floor
+(10–13% of children below 5 words vs. 2–5% elsewhere); direction of that
+relationship (does the floor attenuate the *other* two?) is unresolved.
 
 The Malaysian English/Malay/Mandarin trilingual sample (n=569) was fit with the
 `L`-generalised model but the result — near-zero `rho` across all three pairs —
@@ -265,4 +267,5 @@ words in English / Malay / Mandarin; Mandarin exposure known for only 22%).
 No usable multilingual (3+) sample exists in the current export. See
 `dimensionality_writeup.md`.
 
-Saved: `models/o5_bayes_ENGB-ESEU_summary.csv`, `models/o5_bayes_SBC_calibration.csv`.
+Saved: `models/o5_bayes_ENGB-ESEU_summary.csv`, `models/o5_bayes_NO-PL_summary.csv`,
+`models/o5_bayes_SBC_calibration.csv`.

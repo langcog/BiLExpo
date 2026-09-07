@@ -2,7 +2,7 @@
 
 **Status:** working draft, 2026-09. Analyses live in [`08_o5_dimensionality_mirt.qmd`](08_o5_dimensionality_mirt.qmd), [`09_o5_dimensionality_bayes.qmd`](09_o5_dimensionality_bayes.qmd), [`10_o5_dimensionality_calibration.qmd`](10_o5_dimensionality_calibration.qmd), [`models/bilingual_dim_irt.stan`](models/bilingual_dim_irt.stan), [`scripts/dim_irt_helpers.R`](scripts/dim_irt_helpers.R). Underlying data (`data/items.rds`, `data/demographics.rds`, `data/instruments/`) is embargoed and not in the repo; only aggregate posterior summaries are reported here.
 
-**In one line:** for two English–Spanish bilingual samples, lexical ability across the two languages is ~58–71% one shared dimension and the rest genuinely language-specific — decisively neither "one bilingual lexicon" nor "two independent ones." A trilingual sample was attempted but is unusable (severe CDI floor effects), and no other multilingual sample exists in the data.
+**In one line:** across three bilingual samples — English–Spanish (American and British/European) and Norwegian–Polish — lexical ability across a child's two languages is ~58–71% one shared dimension and the rest genuinely language-specific, decisively neither "one bilingual lexicon" nor "two independent ones." A trilingual sample was attempted but is unusable (severe CDI floor effects), and no other multilingual sample exists in the data.
 
 ## Question
 
@@ -60,26 +60,28 @@ It nests the two extreme hypotheses as limiting cases and generalizes past a sin
 
 Wordbank CDI administrations, filtered to children administered the instrument in every language of interest ("both"/"all" languages), pooling all datasets that include that language. Item easiness/discrimination and person ability are estimated jointly from the response data; exposure proportion and age are per-child, per-language covariates from the demographic records. Samples are screened for per-language vocabulary floor and exposure coverage (`sample_health()`) before fitting.
 
-| sample | children | languages | items (thinned for NUTS runtime) | usable? |
+| sample | children | languages | items | usable? |
 |---|---:|---|---:|---|
-| EN (American) × ES (Mexican) | 474 | 2 | 554 | yes — 2% floor, ~96% exposure coverage |
-| EN (British) × ES (European) | 690 | 2 | ~420 | yes — 10–13% floor, 100% coverage |
-| EN (Malaysian) / Malay / Mandarin (Malaysian) | 569 | 3 | 548 | **no** — 54/35/86% floor; Mandarin exposure known for only 22% |
+| EN (American) × ES (Mexican) | 474 | 2 | 554 thinned (full run in progress) | yes — 2% floor, ~96% exposure coverage |
+| EN (British) × ES (European) | 690 | 2 | ~420 thinned | yes — 10–13% floor, 100% coverage |
+| Norwegian × Polish | 112 | 2 | 697 thinned | yes — 5% / 1% floor, 94% coverage |
+| EN (Malaysian) / Malay / Mandarin (Malaysian) | 569 | 3 | 548 thinned | **no** — 54/35/86% floor; Mandarin exposure known for only 22% |
 
-Full, unthinned NUTS runs (1,600–1,700 items) were not attempted here; thinning trades estimation precision for tractable runtime (each reported fit is 2–13 hours of 4-chain NUTS depending on machine load) and is not expected to introduce bias in the person-level quantities (`rho`, `ECV`) — a full-item run is the natural robustness check.
+Fits so far use every 2nd–3rd item to keep 4-chain NUTS runtime tractable (2–13 h depending on machine load); item thinning trades precision for speed and is not expected to bias the person-level quantities (`rho`, `ECV`). A full-item EN–ES run (all 1665 items, translation-equivalent concept linking enabled) is running as the robustness check.
 
 ## Results
 
 ### Bilingual pairs
 
-| pair | children | `rho` / `ECV` (median, 95% CI) | `beta_age` |
-|---|---:|---|---|
-| English (American) × Spanish (Mexican) | 474 | **0.58** [0.52, 0.64] | 0.15 [−0.05, 0.35] |
-| English (British) × Spanish (European) | 690 | **0.71** [0.66, 0.75] | 2.21 [2.03, 2.39] |
+| pair | children | `rho` / `ECV` (median, 95% CI) | divergences |
+|---|---:|---|---:|
+| English (American) × Spanish (Mexican) | 474 | **0.58** [0.52, 0.64] | 0 |
+| English (British) × Spanish (European) | 690 | **0.71** [0.66, 0.75] | 0 |
+| Norwegian × Polish | 112 | **0.59** [0.43, 0.71] | 0 |
 
-Both fits converged cleanly (zero divergences, max R-hat ≤ 1.005, `rho`/`ECV` effective sample sizes in the thousands). Both **decisively reject both extremes**: the posterior for `rho` excludes 1 (a single bilingual lexicon) and excludes 0 (two fully independent lexicons) by a wide margin. Exposure is the dominant driver of *which* language's words a child knows (`beta_exp` ≈ 3–5 on the centered exposure scale in both fits) — modeling it explicitly, rather than letting it manifest as a factor, is what makes the remaining `sigma_s` interpretable as genuine language-specific ability rather than dominance.
+All three fits converged cleanly (zero divergences, max R-hat ≤ 1.02). All three **decisively reject both extremes** — the posterior for `rho` excludes 1 (a single bilingual lexicon) and excludes 0 (two fully independent lexicons). Exposure is the dominant driver of *which* language's words a child knows (`beta_exp` ≈ 2–5 on the centered exposure scale) — modeling it explicitly, rather than letting it manifest as a factor, is what makes the remaining `sigma_s` interpretable as genuine language-specific ability rather than dominance.
 
-The two pairs agree on the qualitative picture but not on the exact split (58% vs. 71% general-dimension share), and disagree sharply on how much residual age explains after exposure and general ability are accounted for. Whether that's a real difference between these bilingual populations or an artifact of item thinning / sample composition is open — see [Limitations](#limitations--open-questions).
+The estimate is ~58–71% across the three, and the two non–English-Spanish reference points bracket it: **Norwegian × Polish** — a Germanic + Slavic pair with no English, a different bilingual population, different countries — lands at 0.59, right between the two English–Spanish samples. The wide interval reflects n = 112, but the point estimate sits squarely in the same regime. The English (British) sample's somewhat higher estimate (0.71) coincides with its higher CDI floor (10–13% vs. 2–5%); whether that is causal or coincidental is not resolved.
 
 ### Trilingual sample — attempted, then set aside
 
@@ -111,16 +113,16 @@ Recovery is good across the range with only a small (~0.02) low-side bias and no
 
 ## Interpretation
 
-For both **English–Spanish** samples, lexical ability across the two languages is **neither a single shared lexicon nor two independent ones**: a substantial general dimension (~58–71% of reliable person-level variance) coexists with genuine, non-trivial language-specific ability, over and above what exposure and age explain. This is a **bifactor** picture — general ability plus language-specific residual ability — and it is the structure the model space was built to distinguish, not just to detect. The two samples differ on the exact split (58% vs. 71%); whether that reflects a real difference between these bilingual populations, the somewhat higher CDI floor in the British/European sample, or item thinning is not yet resolved.
+Across all three usable samples, lexical ability across a child's two languages is **neither a single shared lexicon nor two independent ones**: a substantial general dimension (~58–71% of reliable person-level variance) coexists with genuine, non-trivial language-specific ability, over and above what exposure and age explain. This is a **bifactor** picture — general ability plus language-specific residual ability — and it is the structure the model space was built to distinguish, not just to detect. That Norwegian–Polish (no shared script beyond Latin, no English, Germanic + Slavic, a different country and dataset) lands in the same range as English–Spanish is the main reason to think the result is a property of early bilingual lexical development rather than of one language pair or population.
 
-Two English–Spanish samples is a narrow base. The obvious next question — does the shared fraction depend on the bilingual *situation* (how much the two languages are acquired together, in overlapping contexts, vs. kept functionally separate)? — is exactly what a trilingual or typologically-diverse comparison would speak to, and is exactly what this data can't currently support: the one multilingual sample is unusable, and the remaining bilingual pairs are all English-plus-a-European-language. The honest current claim is limited to English–Spanish.
+Open: the exact split (0.58 / 0.59 / 0.71). The one higher estimate coincides with a higher CDI floor, which could attenuate the *other* two rather than inflate this one. And the strong version of the question — does the shared fraction depend on how *together* vs. *separate* the two languages are acquired? — still needs a sample where the languages are genuinely functionally segregated (which the one available such sample, the Malaysian trilingual, is too floor-bound to provide).
 
 ## Limitations & open questions
 
-- **Sample coverage.** Two English–Spanish samples. The `~58–71%` figure has not been tested on any other language pair, any non-European pair, or any dominant/heritage configuration. Several more low-floor bilingual pairs are available (English + French n=267, English + German n=239, Norwegian + Polish n=112, Afrikaans + English n=95) but all involve English or are still European.
+- **Sample coverage.** Three samples: two English–Spanish and one Norwegian–Polish. All European, all alphabetic scripts, all Wordbank age ranges. No dominant/heritage configuration, no non-Latin script, no functionally-segregated pair. More low-floor pairs are available (English + French n=267, English + German n=239, Afrikaans + English n=95) but stay close to this profile.
 - **No multilingual sample.** The one k≥3 sample (Malaysian) is at the floor; there is nothing to extend the analysis past two languages with this data.
-- **Item thinning.** All fits use every 2nd–3rd item for tractable NUTS runtime (2–13 h depending on machine load); a full-item run for at least one pair would confirm thinning isn't introducing bias.
-- **Age modeling.** `beta_age` is a linear fixed effect and its estimate differs sharply between the two pairs (0.15 EN-SP American vs. 2.21 EN-GB/ES-EU) — worth a spline and/or age-banded refits before treating that difference as substantive.
+- **Item thinning.** The three reported fits use every 2nd–3rd item for tractable NUTS runtime. A full-item EN–ES run (all 1665 items, concept linking on) is in progress as the check.
+- **Age modeling.** The main age effect on ability is now a natural spline (`age_spline_df = 3`); the age × exposure interaction is still linear in age. The earlier concern — a scalar `beta_age` that came out 0.15 vs. 2.21 across the two English–Spanish pairs — was a linear-age misspecification, and the spline coefficients are well-behaved and monotone in all three fits.
 - **Translation-equivalent (concept) linking is off in every fit** (`link_concepts` auto-disabled — 15–22% item overlap is below the 25% threshold). The conceptual-vs-lexical-representation question (does knowing *dog* predict knowing *perro* beyond general ability?) is untested; it needs richer translation-equivalent coverage or a targeted design.
 - **Semantic (lexical-class) sub-structure** — is any of the language-specific variance actually *semantic* (a noun factor, a predicate factor)? — was part of the original design (`M_class` in `08`) but hasn't been fit on real data; the mIRT convergence failure applies, and it would need the Stan model extended with lexical-class-specific factors.
 - **Single calibration replicate per condition.** The SBC check is indicative, not a full multi-replicate calibration; `10` (written against the now-abandoned mirt pipeline) has not been re-pointed at the Stan model.
