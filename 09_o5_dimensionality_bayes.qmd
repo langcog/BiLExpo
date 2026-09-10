@@ -157,16 +157,15 @@ from 1665; `link_concepts = 0`; 4 chains × 1000, 0 divergences, `rho`/`ecv`
 A **strong common lexical-ability dimension (~58% of reliable person variance)
 plus substantial, genuinely language-specific ability (~40%)**. The posterior
 excludes both `rho`→1 (single dimension) and `rho`→0 (independent lexicons); the
-`unidim` and `twolex` nested fits are not credible. `beta_exp` ≈ 5.4 / 3.4
-(exposure strongly shifts which language's words a child produces); `beta_age`
-≈ 0.15 [−0.05, 0.35] (weak once exposure + general ability are in — a spline on
-age would be a cleaner robustness check).
+`unidim` and `twolex` nested fits are not credible. `beta_exp` ≈ 5 / 3.5
+(exposure strongly shifts which language's words a child produces).
 
-Still to do: `10`'s calibration (SBC on this model — the pipeline may *over*state
-`rho`); a full-item run; a `link_concepts = 1` robustness fit on the ~95
-translation-equivalent items; other language pairs.
+Follow-ups since done (see *Cross-pair replication* and *SBC calibration*
+below): SBC shows the model does not over-state `rho`; the full 1665-item fit
+(concept linking on) and an age spline both leave `rho` at ~0.58; and Norwegian
+× Polish replicates the ~0.6 estimate in a non-English pair.
 
-Saved: `models/o5_bayes_EN-SP_summary.csv`, `models/o5_bayes_EN-SP_full_draws.csv`.
+Saved: `models/o5_bayes_EN-SP_summary.csv`, `models/o5_bayes_EN-SP-full_summary.csv`.
 :::
 
 ```{r}
@@ -247,17 +246,21 @@ transfer to this Stan model.
 | pair | children | items | `rho` (median, 95% CI) | `ecv` | divergences |
 |---|---|---|---|---|---|
 | English (American) × Spanish (Mexican) | 474 | 554 | 0.585 [0.519, 0.642] | 0.582 | 0 |
+| English (American) × Spanish (Mexican) — **full 1665 items, concept linking on** | 474 | 1665 | **0.587 [0.528, 0.644]** | 0.584 | 0 |
 | English (British) × Spanish (European) | 690 | ~420 | 0.708 [0.664, 0.747] | 0.706 | 0 |
 | Norwegian × Polish | 112 | 697 | 0.593 [0.428, 0.709] | 0.586 | 0 |
 
-All three land in the same regime — decisively **rejecting both** `rho → 1`
-(unidimensional) **and** `rho → 0` (separable lexicons). **Norwegian × Polish**
-(Germanic + Slavic, no English, a different bilingual population) sits at 0.59,
-right between the two English–Spanish estimates — the ~58–71% picture is not
-specific to English–Spanish. The wide interval is n = 112. The British/European
-sample's higher point estimate (0.71) coincides with its higher CDI floor
-(10–13% of children below 5 words vs. 2–5% elsewhere); direction of that
-relationship (does the floor attenuate the *other* two?) is unresolved.
+All land in the same regime — decisively **rejecting both** `rho → 1`
+(unidimensional) **and** `rho → 0` (separable lexicons). Robustness: the full
+1665-item EN-American × ES-Mexican fit (46 h, translation-equivalent concept
+linking enabled) gives the same `rho` as the 554-item thinned run — item
+thinning and concept linking don't move it. **Norwegian × Polish** (Germanic +
+Slavic, no English, a different bilingual population) sits at 0.59, right
+between the two English–Spanish estimates — the ~58–71% picture is not specific
+to English–Spanish (wide interval: n = 112). The British/European sample's
+higher point estimate (0.71) coincides with its higher CDI floor (10–13% of
+children below 5 words vs. 2–5% elsewhere); direction of that relationship
+(does the floor attenuate the *other* estimates?) is unresolved.
 
 The Malaysian English/Malay/Mandarin trilingual sample (n=569) was fit with the
 `L`-generalised model but the result — near-zero `rho` across all three pairs —

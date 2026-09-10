@@ -62,12 +62,12 @@ Wordbank CDI administrations, filtered to children administered the instrument i
 
 | sample | children | languages | items | usable? |
 |---|---:|---|---:|---|
-| EN (American) × ES (Mexican) | 474 | 2 | 554 thinned (full run in progress) | yes — 2% floor, ~96% exposure coverage |
+| EN (American) × ES (Mexican) | 474 | 2 | 554 thinned + a full 1665-item run | yes — 2% floor, ~96% exposure coverage |
 | EN (British) × ES (European) | 690 | 2 | ~420 thinned | yes — 10–13% floor, 100% coverage |
 | Norwegian × Polish | 112 | 2 | 697 thinned | yes — 5% / 1% floor, 94% coverage |
 | EN (Malaysian) / Malay / Mandarin (Malaysian) | 569 | 3 | 548 thinned | **no** — 54/35/86% floor; Mandarin exposure known for only 22% |
 
-Fits so far use every 2nd–3rd item to keep 4-chain NUTS runtime tractable (2–13 h depending on machine load); item thinning trades precision for speed and is not expected to bias the person-level quantities (`rho`, `ECV`). A full-item EN–ES run (all 1665 items, translation-equivalent concept linking enabled) is running as the robustness check.
+Most fits use every 2nd–3rd item to keep 4-chain NUTS runtime tractable (2–13 h). One full-item run was done as the check: **EN (American) × ES (Mexican) with all 1665 items and translation-equivalent concept linking enabled** (46 h, 0 divergences) gives `rho` = 0.587 [0.528, 0.644] — indistinguishable from the thinned 0.585 [0.519, 0.642]. Item thinning and the concept-linking choice do not move `rho` / `ECV`.
 
 ## Results
 
@@ -121,9 +121,9 @@ Open: the exact split (0.58 / 0.59 / 0.71). The one higher estimate coincides wi
 
 - **Sample coverage.** Three samples: two English–Spanish and one Norwegian–Polish. All European, all alphabetic scripts, all Wordbank age ranges. No dominant/heritage configuration, no non-Latin script, no functionally-segregated pair. More low-floor pairs are available (English + French n=267, English + German n=239, Afrikaans + English n=95) but stay close to this profile.
 - **No multilingual sample.** The one k≥3 sample (Malaysian) is at the floor; there is nothing to extend the analysis past two languages with this data.
-- **Item thinning.** The three reported fits use every 2nd–3rd item for tractable NUTS runtime. A full-item EN–ES run (all 1665 items, concept linking on) is in progress as the check.
+- **Item thinning** — checked for one sample (EN-American × ES-Mexican: full 1665-item fit gives the same `rho` as the thinned one), assumed to carry over to the other two.
 - **Age modeling.** The main age effect on ability is now a natural spline (`age_spline_df = 3`); the age × exposure interaction is still linear in age. The earlier concern — a scalar `beta_age` that came out 0.15 vs. 2.21 across the two English–Spanish pairs — was a linear-age misspecification, and the spline coefficients are well-behaved and monotone in all three fits.
-- **Translation-equivalent (concept) linking is off in every fit** (`link_concepts` auto-disabled — 15–22% item overlap is below the 25% threshold). The conceptual-vs-lexical-representation question (does knowing *dog* predict knowing *perro* beyond general ability?) is untested; it needs richer translation-equivalent coverage or a targeted design.
+- **Translation-equivalent (concept) linking** is off in the three thinned fits (`link_concepts` auto-disabled — item overlap below the 25% threshold) but *on* in the full 1665-item EN-American × ES-Mexican fit (~636 shared `uni_lemma`s), where it left `rho` unchanged. So the shared-concept structure isn't inflating `rho` — but the sharper conceptual-vs-lexical-representation question (does knowing *dog* predict knowing *perro* over and above general ability, and how much?) still needs its own targeted analysis.
 - **Semantic (lexical-class) sub-structure** — is any of the language-specific variance actually *semantic* (a noun factor, a predicate factor)? — was part of the original design (`M_class` in `08`) but hasn't been fit on real data; the mIRT convergence failure applies, and it would need the Stan model extended with lexical-class-specific factors.
 - **Single calibration replicate per condition.** The SBC check is indicative, not a full multi-replicate calibration; `10` (written against the now-abandoned mirt pipeline) has not been re-pointed at the Stan model.
 
