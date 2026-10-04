@@ -4,8 +4,9 @@ format: html
 params:
   language_a: "English (American)"
   language_b: "Spanish (Mexican)"
-  min_items_per_child: 20
+  min_items_per_child: 20   # per administration
   thin_items: 1           # keep every k-th item/language; full EN-SP is ~1665 items
+  admins: "all"           # "all" administrations (child ability shared across visits) | "latest" per child x language
   age_spline_df: 3        # natural-spline df for the age effect on ability (1 = linear)
   fit_models: false
   method: "sample"        # "sample" (NUTS). ADVI/pathfinder are unreliable here — see below.
@@ -32,7 +33,8 @@ mIRT would), model it, and turn the dimensionality question into a
 - child ability across the `L` languages is `MVN(0, Sigma)` with a
   **compound-symmetric** covariance — a common `c_shared` between every language
   pair, plus a per-language specific variance `sigma_s[L]^2` on the diagonal;
-- exposure + age enter as fixed per-language effects.
+- exposure + age enter as fixed per-language effects, both taken from each
+  **administration's own record** (see *Repeated administrations* below).
 
 Then
 
@@ -75,6 +77,34 @@ knitr::opts_chunk$set(message = FALSE, warning = FALSE)
 
 # Data prep (shares helpers with `08_o5_dimensionality_mirt.qmd`)
 
+## Repeated administrations
+
+Most EN–SP children come from longitudinal studies (Hoff, Marchman,
+Marchman_BTL, Weisleder): 1749 administrations from 474 children, ages 15–41
+months, up to 11 visits per child. An earlier version of this pipeline collapsed
+each child's visits into one "ever produced" row (`max()` over administrations)
+and paired it with a single child-level age (the first exposure record's,
+median-imputed where missing) — which wiped out the age signal entirely
+(cor(age, proportion produced) = 0.01; per-administration it is 0.47) and so
+mis-specified `beta_age` / `beta_age_exp`.
+
+Now `build_pair_long()` keeps one row per (child, administration, item), each
+with its own administration's age and exposure record, and the model treats
+repeated visits as:
+
+- **child-level ability** `theta_child[i, l]` (the MVN with `c_shared` /
+  `sigma_s` that defines `rho` / `ECV`) shared across all of a child's visits —
+  so `rho` is the correlation of children's *stable* language abilities, net of
+  the population age curve;
+- a **per-administration deviation** `sigma_admin[l] * z_admin[a]`
+  (`estimate_admin`, on automatically when visits repeat) absorbing
+  visit-to-visit departures from that curve (growth-rate differences, the
+  occasion) that would otherwise be local dependence among a visit's items.
+
+`params$admins = "latest"` instead keeps one administration per child x language
+(the oldest) — the cross-sectional design the model originally assumed, with the
+age now correct.
+
 ```{r}
 langs <- c(params$language_a, params$language_b)
 
@@ -89,22 +119,25 @@ df_demogs <- readRDS(here("data", "demographics.rds"))
 # (rho gets attenuated toward 0 by measurement, not by structure)
 sample_health(item_table, df_demogs, langs)
 
-pair <- build_pair_matrix(
-  item_table, df_demogs, langs,
-  min_items_per_child = params$min_items_per_child
+# long form the Stan model wants: one row per (child, administration, item),
+# each with that administration's age
+long <- build_pair_long(
+  item_table, df_demogs, langs, admins = params$admins,
+  min_items_per_admin = params$min_items_per_child
 )
 
 if (params$thin_items > 1) {
-  keep_uid <- pair$item_lookup |> group_by(language) |>
+  keep_uid <- long$item_lookup |> group_by(language) |>
     filter(row_number() %% params$thin_items == 0) |> pull(uid)
-  pair$resp        <- pair$resp[, keep_uid, drop = FALSE]
-  pair$item_lookup <- pair$item_lookup |> filter(uid %in% keep_uid) |>
-    arrange(match(uid, colnames(pair$resp)))
+  long$obs <- long$obs |> filter(uid %in% keep_uid)
 }
 
-# long form the Stan model wants: one row per (child, item)
-obs <- wide_to_long_obs(pair$resp, pair$item_lookup, pair$covdata)
-exposure <- child_language_exposure(df_demogs, langs)
+obs <- long$obs
+exposure <- admin_language_exposure(df_demogs, langs)   # per-administration records
+
+# sanity check: vocabulary should rise with age within each administration set
+obs |> group_by(admin_id, age) |> summarise(prop = mean(y), .groups = "drop") |>
+  summarise(cor_age_vocab = cor(age, prop))
 
 link <- if (identical(params$link_concepts, "auto")) NA else
           as.integer(isTRUE(params$link_concepts))
@@ -114,7 +147,7 @@ prep <- build_dim_irt_stan_data(
   estimate_general = 1L, estimate_specific = 1L,
   link_concepts = link, age_spline_df = params$age_spline_df, compute_loglik = 1L
 )
-str(prep$data[c("N", "I", "J", "C", "K_age", "link_concepts")])
+str(prep$data[c("N", "I", "J", "C", "A", "K_age", "link_concepts", "estimate_admin")])
 ```
 
 # Fit the three nested variants
@@ -176,8 +209,9 @@ fit_full <- rd("full"); fit_uni <- rd("unidim"); fit_two <- rd("twolex")
 # The answer, read straight off the full model
 
 ```{r}
-fit_full$summary(c("lambda_g", "sigma_s", "rho", "ecv",
-                   "beta_exp", "beta_age", "sigma_concept", "sigma_delta"))
+fit_full$summary(c("lambda_g", "sigma_s", "sigma_admin", "rho", "ecv",
+                   "beta_exp", "beta_age", "beta_age_exp",
+                   "sigma_concept", "sigma_delta"))
 
 as_draws_df(fit_full$draws(c("rho", "ecv"))) |>
   pivot_longer(c(rho, ecv)) |>
