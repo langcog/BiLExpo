@@ -175,8 +175,21 @@ fit_uni  <- run_variant(1, 0, "unidim")    # sigma_s == 0        -> nested null
 fit_two  <- run_variant(0, 1, "twolex")    # lambda_g == 0       -> nested null
 ```
 
+::: {.callout-warning}
+**Corrected 2026-10.** The result below was computed on collapsed visits with
+no usable age signal (see *Repeated administrations* above). Refit with each
+child's latest administration and its own age (543 items, 948 administrations,
+rstan via `scripts/fit_dim_irt.R latest 3`, 0 divergences): **`rho` = `ecv` =
+0.40 [0.32, 0.47]**, `c_shared` 1.65 (was 3.4), `sigma_s` 1.64 / 1.52; the age
+curve is now monotone (−1.1 logits at 18 vs. 24 months, +1.9 at 30), and
+`beta_exp` is unchanged (5.3 / 4.0). Age-driven growth had been loading on the
+shared factor. The all-administrations fit (`scripts/fit_dim_irt.R all 3`) is
+pending. Saved: `models/o5_bayes_EN-SP-latest-thin3_summary.csv`,
+`models/o5_bayes_EN-SP_longitudinal_comparison.csv`.
+:::
+
 ::: {.callout-note}
-**Result, EN (American) × ES (Mexican), 474 children, 554 items** (thinned 1-in-3
+**Superseded — result, EN (American) × ES (Mexican), 474 children, 554 items** (thinned 1-in-3
 from 1665; `link_concepts = 0`; 4 chains × 1000, 0 divergences, `rho`/`ecv`
 `n_eff` ≈ 1300, `rhat` = 1.00):
 
@@ -279,22 +292,25 @@ transfer to this Stan model.
 
 | pair | children | items | `rho` (median, 95% CI) | `ecv` | divergences |
 |---|---|---|---|---|---|
-| English (American) × Spanish (Mexican) | 474 | 554 | 0.585 [0.519, 0.642] | 0.582 | 0 |
-| English (American) × Spanish (Mexican) — **full 1665 items, concept linking on** | 474 | 1665 | **0.587 [0.528, 0.644]** | 0.584 | 0 |
+| English (American) × Spanish (Mexican) — **latest administration, own age (corrected)** | 474 | 543 | **0.399 [0.322, 0.473]** | 0.398 | 0 |
+| English (American) × Spanish (Mexican) — collapsed visits *(superseded)* | 474 | 554 | 0.585 [0.519, 0.642] | 0.582 | 0 |
+| English (American) × Spanish (Mexican) — collapsed visits, full 1665 items, concept linking on *(superseded)* | 474 | 1665 | 0.587 [0.528, 0.644] | 0.584 | 0 |
 | English (British) × Spanish (European) | 690 | ~420 | 0.708 [0.664, 0.747] | 0.706 | 0 |
 | Norwegian × Polish | 112 | 697 | 0.593 [0.428, 0.709] | 0.586 | 0 |
 
-All land in the same regime — decisively **rejecting both** `rho → 1`
-(unidimensional) **and** `rho → 0` (separable lexicons). Robustness: the full
-1665-item EN-American × ES-Mexican fit (46 h, translation-equivalent concept
-linking enabled) gives the same `rho` as the 554-item thinned run — item
-thinning and concept linking don't move it. **Norwegian × Polish** (Germanic +
-Slavic, no English, a different bilingual population) sits at 0.59, right
-between the two English–Spanish estimates — the ~58–71% picture is not specific
-to English–Spanish (wide interval: n = 112). The British/European sample's
-higher point estimate (0.71) coincides with its higher CDI floor (10–13% of
-children below 5 words vs. 2–5% elsewhere); direction of that relationship
-(does the floor attenuate the *other* estimates?) is unresolved.
+All land between 0.4 and 0.7 — decisively **rejecting both** `rho → 1`
+(unidimensional) **and** `rho → 0` (separable lexicons). Robustness (on the
+pre-correction data): the full 1665-item EN-American × ES-Mexican fit (46 h,
+translation-equivalent concept linking enabled) gave the same `rho` as the
+554-item thinned run — item thinning and concept linking don't move it.
+**Norwegian × Polish** (Germanic + Slavic, no English, a different bilingual
+population) sits at 0.59, between the two English–Spanish estimates (wide
+interval: n = 112). The two English–Spanish samples now differ clearly (0.40
+vs. 0.71): the British/European sample has the higher CDI floor (10–13% of
+children below 5 words vs. 3–5% elsewhere), the American/Mexican one the wider,
+longitudinal age range. Which of these drives the gap is unresolved. The
+British/European and Norwegian–Polish samples are effectively cross-sectional,
+so the longitudinal-age correction does not touch them.
 
 The Malaysian English/Malay/Mandarin trilingual sample (n=569) was fit with the
 `L`-generalised model but the result — near-zero `rho` across all three pairs —

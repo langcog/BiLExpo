@@ -652,6 +652,7 @@ build_dim_irt_stan_data <- function(obs, exposure, langs,
 #' `build_dim_irt_stan_data()`. Returns a draws x length(ages) matrix.
 age_effect_draws <- function(age_basis, beta_age, ages) {
   x <- (ages - age_basis$mean) / age_basis$sd
+  loadNamespace("splines")   # registers predict.ns
   B <- if (is.null(age_basis$ns)) matrix(x, ncol = 1) else predict(age_basis$ns, x)
   as.matrix(beta_age) %*% t(B)
 }
