@@ -1,15 +1,17 @@
 # Fit models/bilingual_accum_v3.stan (shared frequency exponent phi).
-# Usage: Rscript scripts/fit_bilingual_accum_v3.R sim|real|real_noimp
+# Usage: Rscript scripts/fit_bilingual_accum_v3.R sim|real|real_noimp|anchor <lambda>
 #   sim        : parameter recovery on the real design (phi = 0.3, real-like variances)
 #   real       : all 118 translation-equivalent concepts
 #   real_noimp : drops concepts where either label's CHILDES frequency was imputed
 suppressPackageStartupMessages({ library(rstan); library(tidyverse); library(here) })
 rstan_options(auto_write = TRUE)
-mode <- commandArgs(trailingOnly = TRUE)[1]
+args <- commandArgs(trailingOnly = TRUE)
+mode <- args[1]
+anchor <- if (mode == "anchor") as.numeric(args[2]) else NA
 b <- readRDS(here("models", "bilingual_accum_v2_standata.rds"))
 sd <- b$standata
 sd$log_q_te <- log(sd$q_te)
-pars <- c("lambda", "kappa_nc", "kappa_cog", "kappa_diff", "phi", "delta", "age_slope_logit",
+pars <- c(if (is.na(anchor)) "lambda", "kappa_nc", "kappa_cog", "kappa_diff", "phi", "delta", "age_slope_logit",
           "sigma_xi", "sigma_u", "rho_lang", "mu_lang2", "sigma_c", "sigma_eps")
 
 if (mode == "real_noimp") {
@@ -49,15 +51,17 @@ if (mode == "sim") {
   cat(sprintf("simulated mean y = %.2f (real %.2f)\n", mean(sd$y), mean(b$standata$y)))
 }
 
-mod <- stan_model(here("models", "bilingual_accum_v3.stan"))
+if (!is.na(anchor)) sd$lambda <- anchor
+mod <- stan_model(here("models", if (is.na(anchor)) "bilingual_accum_v3.stan" else "bilingual_accum_v3_anchor.stan"))
+tag <- if (is.na(anchor)) mode else sprintf("anchor%.1f", anchor)
 fit <- sampling(mod, data = sd, chains = 4, cores = 4, iter = 1000, warmup = 500,
                 seed = 29, refresh = 100, control = list(adapt_delta = 0.9),
-                init = function() list(lambda = 1, kappa_nc = 0.3, kappa_cog = 0.3, phi = 0.5, delta = 5,
+                init = function() list(kappa_nc = 0.3, kappa_cog = 0.3, phi = 0.5, delta = 5,
                                        sigma_xi = 1, sigma_u = 0.5, sigma_c = 1, sigma_eps = 0.5))
-saveRDS(fit, here("models", sprintf("bilingual_accum_v3_%s_fit.rds", mode)))
+saveRDS(fit, here("models", sprintf("bilingual_accum_v3_%s_fit.rds", tag)))
 summ <- summary(fit, pars = pars)$summary
 out <- round(summ[, c("mean", "2.5%", "50%", "97.5%", "n_eff", "Rhat")], 3)
 if (!is.null(truth)) out <- cbind(truth = unlist(truth[pars]), out)
 print(out)
-write.csv(summ, here("models", sprintf("bilingual_accum_v3_%s_summary.csv", mode)))
+write.csv(summ, here("models", sprintf("bilingual_accum_v3_%s_summary.csv", tag)))
 check_hmc_diagnostics(fit)
