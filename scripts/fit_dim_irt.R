@@ -3,11 +3,13 @@
 # long overnight runs that are impractical to knit.
 #
 # Usage:
-#   Rscript scripts/fit_dim_irt.R <admins> [thin] [tag] [iter_warmup] [iter_sampling]
+#   Rscript scripts/fit_dim_irt.R <admins> [thin] [tag] [iter_warmup] [iter_sampling] [lang_a] [lang_b] [link_concepts]
 #     admins: "all"    -- every administration, child ability shared across
 #                         visits + per-administration deviation (estimate_admin)
 #             "latest" -- one administration per child x language (cross-sectional)
 #     thin:   keep every k-th item per language (default 3, as the 554-item runs)
+#     lang_a / lang_b: CDI languages (default English (American) / Spanish (Mexican))
+#     link_concepts: "auto" (default; on iff >=25% of items share a uni_lemma) | 0 | 1
 #
 # Writes models/o5_bayes_<tag>_fit.rds, _prep.rds (data + age basis), _summary.csv.
 suppressPackageStartupMessages({ library(tidyverse); library(here); library(rstan) })
@@ -16,10 +18,11 @@ source(here("scripts", "dim_irt_helpers.R"))
 args <- commandArgs(trailingOnly = TRUE)
 admins <- if (length(args) >= 1) args[1] else "all"
 thin   <- if (length(args) >= 2) as.integer(args[2]) else 3L
-tag    <- if (length(args) >= 3) args[3] else glue("EN-SP-{admins}-thin{thin}")
+tag    <- if (length(args) >= 3 && nzchar(args[3])) args[3] else glue("EN-SP-{admins}-thin{thin}")
 iter_warmup   <- if (length(args) >= 4) as.integer(args[4]) else 1000L
 iter_sampling <- if (length(args) >= 5) as.integer(args[5]) else 1000L
-langs <- c("English (American)", "Spanish (Mexican)")
+langs <- if (length(args) >= 7) args[6:7] else c("English (American)", "Spanish (Mexican)")
+link_concepts <- if (length(args) >= 8 && args[8] != "auto") as.integer(args[8]) else NA
 
 item_table <- build_item_table(readRDS(here("data", "items.rds")), load_instruments())
 df_demogs  <- readRDS(here("data", "demographics.rds"))
@@ -35,7 +38,7 @@ if (thin > 1) {
 prep <- build_dim_irt_stan_data(
   long$obs, admin_language_exposure(df_demogs, langs), langs,
   estimate_general = 1L, estimate_specific = 1L,
-  link_concepts = NA, age_spline_df = 3L, compute_loglik = 0L
+  link_concepts = link_concepts, age_spline_df = 3L, compute_loglik = 0L
 )
 str(prep$data[c("N", "I", "J", "C", "A", "K_age", "link_concepts", "estimate_admin")])
 saveRDS(prep, here("models", glue("o5_bayes_{tag}_prep.rds")))
@@ -60,7 +63,7 @@ pars <- c("rho", "ecv", "lambda_g", "c_shared", "sigma_s", "sigma_admin",
           "sigma_logalpha", "intercept")
 s <- summary(fit, pars = pars)$summary
 out <- as_tibble(s, rownames = "param") |>
-  mutate(sample = glue("EN(Am) x ES(Mex), admins={admins}, thin={thin}, ",
+  mutate(sample = glue("{langs[1]} x {langs[2]}, admins={admins}, thin={thin}, ",
                        "{prep$data$I} children, {prep$data$A} admins, {prep$data$J} items"),
          .before = 1)
 write_csv(out, here("models", glue("o5_bayes_{tag}_summary.csv")))
