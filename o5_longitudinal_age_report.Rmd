@@ -371,11 +371,14 @@ decomp |>
                      "Latest administration, its own age" = 2))
 ```
 
-For EN (Am) × ES (Mex) most of the drop comes from adjusting for a *correct* age
-(age growth is shared by both languages, so leaving it unmodelled inflates the
-shared component); a smaller part comes from using one administration rather
-than "ever produced". For the cross-sectional pairs the columns barely differ,
-because their ages were already right.
+Adjusting for age lowers the cross-language correlation in every sample, because
+age-driven growth raises both languages together. In the two cross-sectional
+pairs that adjustment was always possible (their ages were right), so the
+before/after columns barely differ. In EN (Am) × ES (Mex) before the fix,
+"adjusting for age" did almost nothing, because the age it was given carried no
+signal; with each administration's real age the adjustment takes effect. That
+accounts for most of the drop; a smaller part comes from using one administration
+rather than "ever produced".
 
 # 5. Age and exposure effects
 
