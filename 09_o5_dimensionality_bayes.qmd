@@ -183,8 +183,12 @@ rstan via `scripts/fit_dim_irt.R latest 3`, 0 divergences): **`rho` = `ecv` =
 0.40 [0.32, 0.47]**, `c_shared` 1.65 (was 3.4), `sigma_s` 1.64 / 1.52; the age
 curve is now monotone (−1.1 logits at 18 vs. 24 months, +1.9 at 30), and
 `beta_exp` is unchanged (5.3 / 4.0). Age-driven growth had been loading on the
-shared factor. The all-administrations fit (`scripts/fit_dim_irt.R all 3`) is
-pending. Saved: `models/o5_bayes_EN-SP-latest-thin3_summary.csv`,
+shared factor. The all-administrations fit (`scripts/fit_dim_irt.R all 3`;
+1749 administrations, 0 divergences) gives a stable-ability **`rho` = 0.63
+[0.53, 0.72]**, with large per-visit deviations (`sigma_admin` 1.29 / 1.20).
+The correlation it implies for a single visit, 0.39 [0.32, 0.45], matches the
+latest-administration fit. Saved: `models/o5_bayes_EN-SP-latest-thin3_summary.csv`,
+`models/o5_bayes_EN-SP-all-thin3_summary.csv`,
 `models/o5_bayes_EN-SP_longitudinal_comparison.csv`.
 :::
 

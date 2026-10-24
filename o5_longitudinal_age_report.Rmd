@@ -166,6 +166,7 @@ pending <- fits |> filter(!available) |> mutate(label = paste0(pair, " — ", ve
   (Norwegian × Polish `r sprintf("%.2f", rho_med("NO-PL", "Before fix"))` →
   `r sprintf("%.2f", rho_med("NO-PL", "After fix"))`). Every sample still rejects
   both a single lexicon (`rho` = 1) and independent lexicons (`rho` = 0).
+`r if (nrow(av <- done |> filter(short == "EN-SP", version == "After fix, all visits"))) paste0("- **All visits.** Using every EN (Am) × ES (Mex) visit, children's *stable* abilities correlate at **", sprintf("%.2f", median(draws_of(av$file)$rho)), "**; the correlation implied for a single visit matches the latest-visit fit (see §4).") else ""`
 `r if (nrow(pending)) paste0("- **Pending fits** (shown as missing below; re-knit when they finish): ", paste(pending$label, collapse = "; "), ".") else ""`
 
 # 1. The data: how longitudinal is each sample?
@@ -309,7 +310,9 @@ ggplot(rho_tbl, aes(rho_med, pair, colour = version, shape = version)) +
   scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, .2)) +
   labs(x = expression(rho~"(posterior median, 95% CI)"), y = NULL,
        title = "Correlation of the two language abilities",
-       subtitle = "0 = independent lexicons, 1 = a single lexicon")
+       subtitle = "0 = independent lexicons, 1 = a single lexicon",
+       caption = if (any(rho_tbl$version == "After fix, all visits"))
+         "All visits: correlation of stable (across-visit) abilities; the other estimates are per visit.")
 ```
 
 ```{r results-table}
@@ -326,6 +329,37 @@ done |>
   kable(caption = "Variance components (posterior median [95% CI]). L1/L2 = first/second language of the pair.") |>
   kable_styling(full_width = FALSE, font_size = 12) |>
   collapse_rows(1, valign = "top")
+```
+
+```{r all-visits}
+# In the all-visits model a single visit's ability is stable part + visit deviation,
+# so the per-visit correlation is c_shared / sqrt(v1 v2) with v_l including sigma_admin^2
+av <- done |> filter(short == "EN-SP", version == "After fix, all visits")
+if (nrow(av)) {
+  d  <- draws_of(av$file)
+  v1 <- d$c_shared + d$`sigma_s[1]`^2 + d$`sigma_admin[1]`^2
+  v2 <- d$c_shared + d$`sigma_s[2]`^2 + d$`sigma_admin[2]`^2
+  av_rho_visit  <- fmt_ci(d$c_shared / sqrt(v1 * v2))
+  av_rho_stable <- fmt_ci(d$rho)
+  av_stable_share <- sprintf("%.0f%% / %.0f%%",
+    100 * median((d$c_shared + d$`sigma_s[1]`^2) / v1),
+    100 * median((d$c_shared + d$`sigma_s[2]`^2) / v2))
+}
+```
+
+```{r all-visits-text, results = "asis"}
+if (nrow(av)) cat(paste0(
+  "## Stable vs. single-visit correlation (EN (Am) × ES (Mex), all visits)\n\n",
+  "The all-visits fit splits each visit's ability into a stable child-level part ",
+  "and a visit-specific deviation (`sigma_admin`), independent across the two ",
+  "languages. Its `rho` = **", av_rho_stable, "** is the correlation of children's ",
+  "*stable* English and Spanish abilities. The correlation it implies for a *single* ",
+  "visit, where the deviation is included, is **", av_rho_visit, "**. That agrees ",
+  "with the latest-visit fit, so the two designs are consistent. The stable part is ",
+  av_stable_share, " (English / Spanish) of a single visit's age- and ",
+  "exposure-adjusted ability variance. Single-visit figures are the like-for-like ",
+  "comparison with the cross-sectional samples (EN (Br) × ES (Eur), NO × PL), where ",
+  "stable and visit-specific variance cannot be separated.\n"))
 ```
 
 ## Why `rho` fell for EN (Am) × ES (Mex)
@@ -456,7 +490,11 @@ done |>
   the corrected data. The pre-fix EN (Br) × ES (Eur) fit used a linear age term.
 - **Repeated visits.** The headline corrected EN (Am) × ES (Mex) estimate uses
   each child's latest visit only. The all-visits model has no child-specific growth
-  rates: growth differences go into the per-visit deviation `sigma_admin`.
+  rates: growth differences go into the per-visit deviation `sigma_admin`. That
+  deviation is also independent across the two languages, even when both CDIs were
+  filled in at the same visit. A shared visit-level component (a growth spurt, or
+  how the parent reported that day) is not modelled, so its effect on the
+  stable-ability `rho` is unknown.
 - **The EN–ES gap.** The two English–Spanish samples now differ clearly
   (0.40 vs ~0.7). The British/European sample has the higher CDI floor; the
   American/Mexican one the wider, longitudinal age range. Which drives the gap is
