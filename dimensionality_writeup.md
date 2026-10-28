@@ -1,8 +1,8 @@
 # Is bilingual lexical ability one dimension, or several?
 
-**Status:** working draft, 2026-09. Analyses live in [`08_o5_dimensionality_mirt.qmd`](08_o5_dimensionality_mirt.qmd), [`09_o5_dimensionality_bayes.qmd`](09_o5_dimensionality_bayes.qmd), [`10_o5_dimensionality_calibration.qmd`](10_o5_dimensionality_calibration.qmd), [`models/bilingual_dim_irt.stan`](models/bilingual_dim_irt.stan), [`scripts/dim_irt_helpers.R`](scripts/dim_irt_helpers.R). Underlying data (`data/items.rds`, `data/demographics.rds`, `data/instruments/`) is embargoed and not in the repo; only aggregate posterior summaries are reported here.
+**Status:** working draft, 2026-09; English (American) × Spanish (Mexican) corrected 2026-10 (see [Correction](#correction-longitudinal-administrations-2026-10)). Analyses live in [`08_o5_dimensionality_mirt.qmd`](08_o5_dimensionality_mirt.qmd), [`09_o5_dimensionality_bayes.qmd`](09_o5_dimensionality_bayes.qmd), [`10_o5_dimensionality_calibration.qmd`](10_o5_dimensionality_calibration.qmd), [`models/bilingual_dim_irt.stan`](models/bilingual_dim_irt.stan), [`scripts/dim_irt_helpers.R`](scripts/dim_irt_helpers.R). Underlying data (`data/items.rds`, `data/demographics.rds`, `data/instruments/`) is embargoed and not in the repo; only aggregate posterior summaries are reported here.
 
-**In one line:** across three bilingual samples — English–Spanish (American and British/European) and Norwegian–Polish — lexical ability across a child's two languages is ~58–71% one shared dimension and the rest genuinely language-specific, decisively neither "one bilingual lexicon" nor "two independent ones." A trilingual sample was attempted but is unusable (severe CDI floor effects), and no other multilingual sample exists in the data.
+**In one line:** across three bilingual samples — English–Spanish (American and British/European) and Norwegian–Polish — lexical ability across a child's two languages is ~40–70% one shared dimension and the rest genuinely language-specific, decisively neither "one bilingual lexicon" nor "two independent ones." A trilingual sample was attempted but is unusable (severe CDI floor effects), and no other multilingual sample exists in the data.
 
 ## Question
 
@@ -58,16 +58,16 @@ It nests the two extreme hypotheses as limiting cases and generalizes past a sin
 
 ## Data
 
-Wordbank CDI administrations, filtered to children administered the instrument in every language of interest ("both"/"all" languages), pooling all datasets that include that language. Item easiness/discrimination and person ability are estimated jointly from the response data; exposure proportion and age are per-child, per-language covariates from the demographic records. Samples are screened for per-language vocabulary floor and exposure coverage (`sample_health()`) before fitting.
+Wordbank CDI administrations, filtered to children administered the instrument in every language of interest ("both"/"all" languages), pooling all datasets that include that language. Item easiness/discrimination and person ability are estimated jointly from the response data; exposure proportion and age are covariates from each **administration's** own demographic record. Children with several (longitudinal) administrations keep each one as its own unit with its own age — see [Correction](#correction-longitudinal-administrations-2026-10). Samples are screened for per-language vocabulary floor and exposure coverage (`sample_health()`) before fitting.
 
 | sample | children | languages | items | usable? |
 |---|---:|---|---:|---|
-| EN (American) × ES (Mexican) | 474 | 2 | 554 thinned + a full 1665-item run | yes — 2% floor, ~96% exposure coverage |
-| EN (British) × ES (European) | 690 | 2 | ~420 thinned | yes — 10–13% floor, 100% coverage |
+| EN (American) × ES (Mexican) | 474 (1749 administrations) | 2 | 543 thinned | yes — 3–5% of administrations at floor, ~96% exposure coverage |
+| EN (British) × ES (European) | 690 | 2 | 417 thinned | yes — 10–13% floor, 100% coverage |
 | Norwegian × Polish | 112 | 2 | 697 thinned | yes — 5% / 1% floor, 94% coverage |
 | EN (Malaysian) / Malay / Mandarin (Malaysian) | 569 | 3 | 548 thinned | **no** — 54/35/86% floor; Mandarin exposure known for only 22% |
 
-Most fits use every 2nd–3rd item to keep 4-chain NUTS runtime tractable (2–13 h). One full-item run was done as the check: **EN (American) × ES (Mexican) with all 1665 items and translation-equivalent concept linking enabled** (46 h, 0 divergences) gives `rho` = 0.587 [0.528, 0.644] — indistinguishable from the thinned 0.585 [0.519, 0.642]. Item thinning and the concept-linking choice do not move `rho` / `ECV`.
+Most fits use every 2nd–3rd item to keep 4-chain NUTS runtime tractable (2–15 h). One full-item run was done as the check, on the pre-correction EN (American) × ES (Mexican) data: **all 1665 items and translation-equivalent concept linking enabled** (46 h, 0 divergences) gave `rho` = 0.587 [0.528, 0.644] — indistinguishable from the thinned 0.585 [0.519, 0.642] on the same data. So item thinning and the concept-linking choice do not move `rho` / `ECV`. (That check has not been repeated on the corrected data.)
 
 ## Results
 
@@ -75,13 +75,33 @@ Most fits use every 2nd–3rd item to keep 4-chain NUTS runtime tractable (2–1
 
 | pair | children | `rho` / `ECV` (median, 95% CI) | divergences |
 |---|---:|---|---:|
-| English (American) × Spanish (Mexican) | 474 | **0.58** [0.52, 0.64] | 0 |
-| English (British) × Spanish (European) | 690 | **0.71** [0.66, 0.75] | 0 |
-| Norwegian × Polish | 112 | **0.59** [0.43, 0.71] | 0 |
+| English (American) × Spanish (Mexican) | 474 | **0.40** [0.32, 0.47] (was 0.58 before the [correction](#correction-longitudinal-administrations-2026-10)) | 0 |
+| English (British) × Spanish (European) | 690 | **0.70** [0.65, 0.74] (0.71 before the correction) | 0 |
+| Norwegian × Polish | 112 | **0.56** [0.41, 0.69] (0.59 before the correction) | 0 |
 
-All three fits converged cleanly (zero divergences, max R-hat ≤ 1.02). All three **decisively reject both extremes** — the posterior for `rho` excludes 1 (a single bilingual lexicon) and excludes 0 (two fully independent lexicons). Exposure is the dominant driver of *which* language's words a child knows (`beta_exp` ≈ 2–5 on the centered exposure scale) — modeling it explicitly, rather than letting it manifest as a factor, is what makes the remaining `sigma_s` interpretable as genuine language-specific ability rather than dominance.
+All three fits converged cleanly (zero divergences, max R-hat ≤ 1.07). All three **decisively reject both extremes** — the posterior for `rho` excludes 1 (a single bilingual lexicon) and excludes 0 (two fully independent lexicons). Exposure is the dominant driver of *which* language's words a child knows (`beta_exp` ≈ 2–5 on the centered exposure scale) — modeling it explicitly, rather than letting it manifest as a factor, is what makes the remaining `sigma_s` interpretable as genuine language-specific ability rather than dominance.
 
-The estimate is ~58–71% across the three, and the two non–English-Spanish reference points bracket it: **Norwegian × Polish** — a Germanic + Slavic pair with no English, a different bilingual population, different countries — lands at 0.59, right between the two English–Spanish samples. The wide interval reflects n = 112, but the point estimate sits squarely in the same regime. The English (British) sample's somewhat higher estimate (0.71) coincides with its higher CDI floor (10–13% vs. 2–5%); whether that is causal or coincidental is not resolved.
+The estimate ranges from 0.40 to 0.70 across the three, with **Norwegian × Polish** — a Germanic + Slavic pair with no English, a different bilingual population, different countries — at 0.56, between the two English–Spanish samples. The wide interval reflects n = 112. The spread is now wider than chance: the American/Mexican (0.40) and British/European (0.70) English–Spanish intervals do not overlap. The British sample has a higher CDI floor (10–13% vs. 3–5%), and the American sample spans a wider age range (15–40 months, mostly longitudinal); which, if either, drives the gap is not resolved.
+
+### Correction: longitudinal administrations (2026-10)
+
+The English (American) × Spanish (Mexican) sample is mostly longitudinal (Hoff, Marchman, Marchman_BTL, Weisleder): 474 children, **1749 administrations**, 15–40 months, up to 11 visits per child. The original pipeline (`build_pair_matrix()`) collapsed each child's visits to "ever produced" (`max` over administrations) and attached a single child-level age — the first exposure record's, median-imputed where missing. That erased the age signal: the correlation between age and proportion of items produced was **0.01** (−0.17 within Hoff), against **0.47** per administration. The fitted age spline came out U-shaped — 18-month-olds 0.6 logits *above* 24-month-olds — and the earlier "`beta_age` 0.15 vs. 2.21 across the two English–Spanish pairs" discrepancy, attributed at the time to linear-age misspecification, was this bug. The British/European and Norwegian–Polish samples are effectively cross-sectional (2 of 690 and 0 of 112 children have a repeat visit). Refit with the new pipeline (latest administration, same item thinning, concept linking off), their estimates barely move: British/European `rho` 0.71 → **0.70 [0.65, 0.74]** (this refit also replaces that sample's old linear age term with the spline), Norwegian–Polish 0.59 → **0.56 [0.41, 0.69]** (7 children without an exposure record now get their own age rather than the median).
+
+The pipeline now keeps one row per (child, administration, item) with that administration's own age and exposure record (`build_pair_long()`). Refit with **one administration per child × language (the latest)** — the cross-sectional design the model assumes — 543 items, 948 administrations, 14.7 h NUTS, 0 divergences:
+
+| quantity | before (visits collapsed, 1665 items) | after (latest administration, own age) |
+|---|---|---|
+| `rho` / `ECV` | 0.59 [0.53, 0.64] | **0.40 [0.32, 0.47]** |
+| `c_shared` | 3.42 | 1.65 |
+| `sigma_s` EN / ES | 1.74 / 1.35 | 1.64 / 1.52 |
+| age effect, 18 vs. 24 months | +0.64 [0.18, 1.10] | −1.12 [−1.83, −0.46] |
+| age effect, 30 vs. 24 months | +0.94 [0.48, 1.42] | +1.91 [1.54, 2.33] |
+| `beta_exp` EN / ES | 5.2 / 3.5 | 5.3 / 4.0 |
+| `beta_age_exp` EN / ES (per month) | 0.00 / 0.14 | 0.18 / 0.16 |
+
+The age curve is now monotone, and the exposure effects barely move. The shared covariance halves while the language-specific variances don't: with no usable age covariate, age-driven growth, which raises both languages together, had been absorbed into the shared factor. A descriptive check gives the same picture. The correlation between children's English and Spanish vocabulary (logit proportion produced), after regressing out exposure, is 0.60 on the old collapsed data, 0.52 on the latest administrations, and **0.36** once age is also regressed out. Most of the drop is the age adjustment; a smaller part is using one administration instead of "ever produced".
+
+A second variant uses **all administrations** (1749 administrations, 554 items, 16.6 h NUTS, 0 divergences, max R-hat 1.02). It shares each child's ability across visits and adds a per-visit deviation `sigma_admin`, independent across the two languages. Its `rho` is the correlation of children's *stable* abilities: **0.63 [0.53, 0.72]**. The visit deviations are large (`sigma_admin` 1.29 / 1.20, against `sigma_s` 0.93 / 1.00 and `c_shared` 1.59). The stable part is ~60% (English) and ~64% (Spanish) of a single visit's adjusted ability variance. The correlation the model implies for a *single* visit is **0.39 [0.32, 0.45]**, which matches the latest-administration fit, so the two designs agree. The single-visit value is the like-for-like comparison with the two cross-sectional samples, which cannot separate stable from visit-specific variance. The stable-ability value says that, averaging over visit-to-visit fluctuation, about two-thirds of what distinguishes a child's English and Spanish ability (beyond age and exposure) is shared. Caveat: a visit-level deviation *shared* by both CDIs (same-day reporting, a growth spurt) and child-specific growth rates are not modelled; both are absorbed into `sigma_admin`.
 
 ### Trilingual sample — attempted, then set aside
 
@@ -113,19 +133,20 @@ Recovery is good across the range with only a small (~0.02) low-side bias and no
 
 ## Interpretation
 
-Across all three usable samples, lexical ability across a child's two languages is **neither a single shared lexicon nor two independent ones**: a substantial general dimension (~58–71% of reliable person-level variance) coexists with genuine, non-trivial language-specific ability, over and above what exposure and age explain. This is a **bifactor** picture — general ability plus language-specific residual ability — and it is the structure the model space was built to distinguish, not just to detect. That Norwegian–Polish (no shared script beyond Latin, no English, Germanic + Slavic, a different country and dataset) lands in the same range as English–Spanish is the main reason to think the result is a property of early bilingual lexical development rather than of one language pair or population.
+Across all three usable samples, lexical ability across a child's two languages is **neither a single shared lexicon nor two independent ones**: a substantial general dimension (~40–70% of reliable person-level variance) coexists with genuine, non-trivial language-specific ability, over and above what exposure and age explain. This is a **bifactor** picture — general ability plus language-specific residual ability — and it is the structure the model space was built to distinguish, not just to detect. That Norwegian–Polish (no shared script beyond Latin, no English, Germanic + Slavic, a different country and dataset) lands in the same range as English–Spanish is the main reason to think the result is a property of early bilingual lexical development rather than of one language pair or population.
 
-Open: the exact split (0.58 / 0.59 / 0.71). The one higher estimate coincides with a higher CDI floor, which could attenuate the *other* two rather than inflate this one. And the strong version of the question — does the shared fraction depend on how *together* vs. *separate* the two languages are acquired? — still needs a sample where the languages are genuinely functionally segregated (which the one available such sample, the Malaysian trilingual, is too floor-bound to provide).
+Open: the exact split (0.40 / 0.56 / 0.70), and in particular why the two English–Spanish samples differ. The British/European sample has the higher CDI floor; the American/Mexican sample has the wider age range, and the correction above shows how much shared variance age alone can contribute when it isn't modeled. And the strong version of the question — does the shared fraction depend on how *together* vs. *separate* the two languages are acquired? — still needs a sample where the languages are genuinely functionally segregated (which the one available such sample, the Malaysian trilingual, is too floor-bound to provide).
 
 ## Limitations & open questions
 
 - **Sample coverage.** Three samples: two English–Spanish and one Norwegian–Polish. All European, all alphabetic scripts, all Wordbank age ranges. No dominant/heritage configuration, no non-Latin script, no functionally-segregated pair. More low-floor pairs are available (English + French n=267, English + German n=239, Afrikaans + English n=95) but stay close to this profile.
 - **No multilingual sample.** The one k≥3 sample (Malaysian) is at the floor; there is nothing to extend the analysis past two languages with this data.
-- **Item thinning** — checked for one sample (EN-American × ES-Mexican: full 1665-item fit gives the same `rho` as the thinned one), assumed to carry over to the other two.
-- **Age modeling.** The main age effect on ability is now a natural spline (`age_spline_df = 3`); the age × exposure interaction is still linear in age. The earlier concern — a scalar `beta_age` that came out 0.15 vs. 2.21 across the two English–Spanish pairs — was a linear-age misspecification, and the spline coefficients are well-behaved and monotone in all three fits.
+- **Item thinning** — checked once, on the pre-correction EN-American × ES-Mexican data (full 1665-item fit gave the same `rho` as the thinned one); assumed to carry over.
+- **Age modeling.** The main age effect on ability is a natural spline (`age_spline_df = 3`); the age × exposure interaction is still linear in age. Age and exposure are taken per administration. Ability is a child-level random effect, with no child-specific growth rates: in the all-administrations variant, growth-rate differences land in the per-visit deviation `sigma_admin`.
+- **Repeated administrations.** The headline EN-American × ES-Mexican estimate (0.40) is per visit (latest visit only), comparable to the cross-sectional samples. Across all visits, stable abilities correlate at 0.63, but that model treats per-visit deviations as independent across languages and has no child-specific growth rates.
 - **Translation-equivalent (concept) linking** is off in the three thinned fits (`link_concepts` auto-disabled — item overlap below the 25% threshold) but *on* in the full 1665-item EN-American × ES-Mexican fit (~636 shared `uni_lemma`s), where it left `rho` unchanged. So the shared-concept structure isn't inflating `rho` — but the sharper conceptual-vs-lexical-representation question (does knowing *dog* predict knowing *perro* over and above general ability, and how much?) still needs its own targeted analysis.
 - **Semantic (lexical-class) sub-structure** — is any of the language-specific variance actually *semantic* (a noun factor, a predicate factor)? — was part of the original design (`M_class` in `08`) but hasn't been fit on real data; the mIRT convergence failure applies, and it would need the Stan model extended with lexical-class-specific factors.
-- **Single calibration replicate per condition.** The SBC check is indicative, not a full multi-replicate calibration; `10` (written against the now-abandoned mirt pipeline) has not been re-pointed at the Stan model.
+- **Single calibration replicate per condition.** The SBC check is indicative, not a full multi-replicate calibration, and it used the pre-correction EN–SP design (child-level ages); `10` (written against the now-abandoned mirt pipeline) has not been re-pointed at the Stan model.
 
 ## Reproducing
 

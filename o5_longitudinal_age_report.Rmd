@@ -1,0 +1,520 @@
+---
+title: "O5 dimensionality: correcting the age signal in longitudinal CDI data"
+subtitle: "Per-administration ages and the bilingual dimensionality refits"
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    df_print: kable
+params:
+  old_models_dir: "../BiLExpo/models"   # pre-fix fits (gitignored; main checkout)
+  old_commit: "bb0f5ed"                 # last commit with the visit-collapsing pipeline
+  refresh_cache: false                  # re-extract posterior draws from the .rds fits
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 8, fig.height = 4.5,
+                      dpi = 120)
+suppressPackageStartupMessages({
+  library(tidyverse); library(here); library(rstan); library(splines)
+  library(knitr); library(kableExtra); library(patchwork)
+})
+source(here("scripts", "dim_irt_helpers.R"))
+
+# pre-fix helpers, straight from git, to rebuild exactly what the old fits saw
+old <- new.env()
+old_src <- tempfile(fileext = ".R")
+writeLines(system2("git", c("-C", here(), "show",
+                            paste0(params$old_commit, ":scripts/dim_irt_helpers.R")),
+                   stdout = TRUE), old_src)
+sys.source(old_src, envir = old)
+
+# two-series palette (validated: CVD dE 24.7, normal-vision dE 33.6); shape is the
+# redundant channel so identity never rests on colour alone
+pal   <- c("Before fix" = "#eb6834", "After fix" = "#2a78d6",
+           "After fix, all visits" = "#1baf7a")
+shp   <- c("Before fix" = 17, "After fix" = 16, "After fix, all visits" = 15)
+theme_set(theme_minimal(base_size = 11) +
+  theme(panel.grid.minor = element_blank(),
+        panel.grid.major = element_line(colour = "grey92", linewidth = 0.3),
+        strip.text = element_text(face = "bold", hjust = 0),
+        legend.position = "top", legend.title = element_blank(),
+        plot.title.position = "plot"))
+
+fmt_ci <- function(x, d = 2) sprintf(paste0("%.", d, "f [%.", d, "f, %.", d, "f]"),
+                                     median(x), quantile(x, .025), quantile(x, .975))
+```
+
+```{r data}
+item_table <- build_item_table(readRDS(here("data", "items.rds")), load_instruments())
+df_demogs  <- readRDS(here("data", "demographics.rds"))
+
+pairs <- tribble(
+  ~pair,                ~lang_a,              ~lang_b,              ~short,
+  "EN (Am) × ES (Mex)",  "English (American)", "Spanish (Mexican)",  "EN-SP",
+  "EN (Br) × ES (Eur)",  "English (British)",  "Spanish (European)", "ENGB-ESEU",
+  "Norwegian × Polish",  "Norwegian",          "Polish",             "NO-PL"
+)
+
+# each pair, built three ways: the old collapsed matrix, latest admin, all admins
+built <- pairs |> mutate(data = map2(lang_a, lang_b, \(a, b) {
+  langs <- c(a, b)
+  list(
+    old    = suppressWarnings(old$build_pair_matrix(item_table, df_demogs, langs)),
+    latest = suppressMessages(build_pair_long(item_table, df_demogs, langs, admins = "latest")),
+    all    = suppressMessages(build_pair_long(item_table, df_demogs, langs, admins = "all"))
+  )
+}))
+names(built$data) <- built$short
+dataset_of <- df_demogs |> distinct(child_id = as.character(child_id), dataset_name)
+```
+
+# Summary
+
+```{r fits-registry}
+# every fit the report knows about; new fits live in this branch's models/
+fits <- tribble(
+  ~short,      ~version,                 ~file,                                                   ~thin, ~age_df, ~new,
+  "EN-SP",     "Before fix",             "o5_bayes_full_EN-SP-1665items.rds",                     1,     3L,      FALSE,
+  "EN-SP",     "After fix",              "o5_bayes_EN-SP-latest-thin3_fit.rds",                   3,     3L,      TRUE,
+  "EN-SP",     "After fix, all visits",  "o5_bayes_EN-SP-all-thin3_fit.rds",                      3,     3L,      TRUE,
+  "ENGB-ESEU", "Before fix",             "o5_bayes_full_English..British..rds",                   2,     1L,      FALSE,
+  "ENGB-ESEU", "After fix",              "o5_bayes_ENGB-ESEU-latest-thin2_fit.rds",               2,     3L,      TRUE,
+  "NO-PL",     "Before fix",             "o5_bayes_full_Norwegian-Polish.rds",                    2,     3L,      FALSE,
+  "NO-PL",     "After fix",              "o5_bayes_NO-PL-latest-thin2_fit.rds",                   2,     3L,      TRUE
+) |>
+  mutate(path = if_else(new, here("models", file), file.path(params$old_models_dir, file)),
+         available = file.exists(path)) |>
+  left_join(pairs |> select(short, pair), by = "short")
+```
+
+```{r extract-draws}
+# Posterior draws for the handful of parameters the report uses, cached so the
+# multi-hundred-MB stanfit objects are only read once per new fit.
+cache_file <- here("models", "o5_longitudinal_report_cache.rds")
+cache <- if (file.exists(cache_file) && !params$refresh_cache) readRDS(cache_file) else list()
+
+old_age_basis <- function(short, thin, df) {
+  op <- built$data[[short]]$old
+  keep <- op$item_lookup |> group_by(language) |>
+    filter(row_number() %% thin == 0) |> pull(uid)
+  obs <- old$wide_to_long_obs(op$resp[, keep, drop = FALSE],
+                              op$item_lookup |> filter(uid %in% keep), op$covdata)
+  x <- as.numeric(scale(obs$age))
+  list(mean = mean(obs$age), sd = sd(obs$age), ns = if (df > 1) ns(x, df = df))
+}
+
+for (k in which(fits$available)) {
+  key <- fits$file[k]
+  if (!is.null(cache[[key]]) && cache[[key]]$mtime == file.mtime(fits$path[k])) next
+  fit <- readRDS(fits$path[k])
+  dr  <- as.data.frame(fit)
+  keep <- grep("^(rho|ecv|lambda_g|c_shared|sigma_s|sigma_admin|beta_exp|beta_age|beta_age_exp)(\\[|$)",
+               names(dr), value = TRUE)
+  basis <- if (fits$new[k]) {
+    readRDS(sub("_fit\\.rds$", "_prep.rds", fits$path[k]))$age_basis
+  } else old_age_basis(fits$short[k], fits$thin[k], fits$age_df[k])
+  sm <- summary(fit)$summary
+  cache[[key]] <- list(
+    mtime = file.mtime(fits$path[k]), draws = dr[, keep], basis = basis,
+    diag = tibble(divergences = get_num_divergent(fit),
+                  max_rhat = max(sm[, "Rhat"], na.rm = TRUE),
+                  min_neff = min(sm[c("rho", "ecv"), "n_eff"]),
+                  hours = max(rowSums(get_elapsed_time(fit))) / 3600,
+                  N = if (fits$new[k]) readRDS(sub("_fit\\.rds$", "_prep.rds", fits$path[k]))$data$N
+                      else NA_integer_))
+  rm(fit, dr); gc()
+}
+saveRDS(cache, cache_file)
+
+draws_of <- function(file) cache[[file]]$draws
+c_shared_of <- function(d) if ("c_shared" %in% names(d)) d$c_shared else d$lambda_g^2
+done <- fits |> filter(available)
+```
+
+```{r headline-numbers}
+rho_med <- function(short, version) {
+  f <- done |> filter(short == !!short, version == !!version)
+  if (!nrow(f)) return(NA_real_)
+  median(draws_of(f$file)$rho)
+}
+r_old_ensp <- with(built$data[["EN-SP"]]$old,
+  cor(covdata$age, rowMeans(resp, na.rm = TRUE)))
+r_new_ensp <- built$data[["EN-SP"]]$all$obs |>
+  group_by(admin_id, age) |> summarise(p = mean(y), .groups = "drop") |>
+  with(cor(age, p))
+pending <- fits |> filter(!available) |> mutate(label = paste0(pair, " — ", version))
+```
+
+- **The bug.** `build_pair_matrix()` collapsed each child's CDI administrations to
+  "ever produced" (`max()` across visits) and gave every response a single
+  child-level age. In the longitudinal English (American) × Spanish (Mexican)
+  sample this erased the age signal: the correlation between age and proportion of
+  items produced was **`r sprintf("%.2f", r_old_ensp)`**, against
+  **`r sprintf("%.2f", r_new_ensp)`** when each administration keeps its own age.
+- **The fix.** One row per (child, administration, item), each with its own age
+  and exposure record (`build_pair_long()`); the Stan model takes per-observation
+  exposure and, when visits repeat, a per-visit ability deviation.
+- **The consequence.** For EN (Am) × ES (Mex) the cross-language ability
+  correlation `rho` falls from
+  **`r sprintf("%.2f", rho_med("EN-SP", "Before fix"))`** to
+  **`r sprintf("%.2f", rho_med("EN-SP", "After fix"))`**: age-driven growth,
+  shared by both languages, had been absorbed into the shared factor. The two
+  cross-sectional samples barely move
+  (Norwegian × Polish `r sprintf("%.2f", rho_med("NO-PL", "Before fix"))` →
+  `r sprintf("%.2f", rho_med("NO-PL", "After fix"))`). Every sample still rejects
+  both a single lexicon (`rho` = 1) and independent lexicons (`rho` = 0).
+`r if (nrow(av <- done |> filter(short == "EN-SP", version == "After fix, all visits"))) paste0("- **All visits.** Using every EN (Am) × ES (Mex) visit, children's *stable* abilities correlate at **", sprintf("%.2f", median(draws_of(av$file)$rho)), "**; the correlation implied for a single visit matches the latest-visit fit (see §4).") else ""`
+`r if (nrow(pending)) paste0("- **Pending fits** (shown as missing below; re-knit when they finish): ", paste(pending$label, collapse = "; "), ".") else ""`
+
+# 1. The data: how longitudinal is each sample?
+
+```{r admin-structure}
+built |>
+  transmute(pair, d = data) |>
+  mutate(stats = map(d, \(x) {
+    adm <- x$all$admins
+    per_cell <- adm |> count(child_id, language)
+    tibble(children = n_distinct(adm$child_id),
+           administrations = nrow(adm),
+           `children with a repeat visit` = n_distinct(per_cell$child_id[per_cell$n > 1]),
+           `max visits / language` = max(per_cell$n),
+           `age range (months)` = sprintf("%.0f–%.0f", min(adm$age), max(adm$age)))
+  })) |>
+  select(-d) |> unnest(stats) |>
+  kable(align = "lrrrrr", caption = "Administrations per sample (children with every language of the pair).") |>
+  kable_styling(full_width = FALSE)
+```
+
+Only English (American) × Spanish (Mexican) is substantially longitudinal. Its
+children come from several studies with different designs:
+
+```{r ensp-datasets}
+built$data[["EN-SP"]]$all$admins |>
+  group_by(dataset_name) |>
+  summarise(children = n_distinct(child_id),
+            administrations = n(),
+            `visits per child (max)` = max(table(paste(child_id, language))),
+            `age range` = sprintf("%.0f–%.0f", min(age), max(age)), .groups = "drop") |>
+  kable(caption = "EN (Am) × ES (Mex) by source dataset.") |>
+  kable_styling(full_width = FALSE)
+```
+
+# 2. The problem: age carried no signal
+
+Before the fix, each child appears once, with the proportion of items they
+*ever* produced across all visits, plotted at a single child-level age (the
+first exposure record's, median-imputed when missing — the vertical stripe at 30
+months). After the fix, every administration is its own point at its own age.
+
+```{r age-vocab-plot, fig.height = 5}
+ensp <- built$data[["EN-SP"]]
+before <- ensp$old$covdata |>
+  mutate(prop = rowMeans(ensp$old$resp, na.rm = TRUE), version = "Before fix")
+after <- ensp$all$obs |>
+  group_by(child_id, admin_id, age) |>
+  summarise(prop = mean(y), .groups = "drop") |>
+  mutate(version = "After fix")
+bind_rows(before, after) |>
+  left_join(dataset_of, by = "child_id") |>
+  mutate(version = factor(version, c("Before fix", "After fix"))) |>
+  ggplot(aes(age, prop, colour = version, shape = version)) +
+  geom_point(size = 1.1, alpha = 0.45) +
+  geom_smooth(method = "loess", se = FALSE, linewidth = 0.9, span = 0.9) +
+  facet_wrap(~version) +
+  scale_colour_manual(values = pal) + scale_shape_manual(values = shp) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "Age (months)", y = "Items produced (share of form)",
+       title = "EN (Am) × ES (Mex): proportion of items produced vs. age",
+       subtitle = "Before: one point per child (visits collapsed). After: one point per administration.") +
+  guides(colour = "none", shape = "none")
+```
+
+```{r age-vocab-table}
+cor_by_dataset <- function(df) df |>
+  left_join(dataset_of, by = "child_id") |>
+  group_by(dataset_name) |> summarise(r = cor(age, prop), n = n(), .groups = "drop") |>
+  bind_rows(tibble(dataset_name = "All datasets", r = cor(df$age, df$prop), n = nrow(df)))
+full_join(cor_by_dataset(before) |> rename(`r before` = r, `n children` = n),
+          cor_by_dataset(after)  |> rename(`r after` = r, `n administrations` = n),
+          by = "dataset_name") |>
+  mutate(across(starts_with("r "), \(x) sprintf("%.2f", x))) |>
+  kable(col.names = c("Dataset", "r(age, vocab) before", "n children",
+                      "r(age, vocab) after", "n administrations"),
+        align = "lrrrr",
+        caption = "Correlation of age with proportion produced, EN (Am) × ES (Mex).") |>
+  kable_styling(full_width = FALSE) |>
+  row_spec(6, bold = TRUE)
+```
+
+The negative within-Hoff correlation before the fix is the giveaway: children
+recruited young have more later visits to accumulate "ever produced" words, yet
+were assigned their young first age.
+
+# 3. The fix
+
+- **`build_pair_long()`** — one row per (child, administration, item) with that
+  administration's `age` and `admin_id` (`data_id`). `admins = "all"` keeps every
+  visit; `admins = "latest"` keeps the oldest-age administration per child ×
+  language (cross-sectional). Administrations with no recorded age are dropped
+  rather than median-imputed.
+- **`admin_language_exposure()`** — exposure from each administration's own
+  record (it changes across visits for some children).
+  `child_language_exposure()` is now its child-level mean.
+- **Stan model** (`models/bilingual_dim_irt.stan`) — exposure enters per
+  observation; with repeat visits (`estimate_admin`), child ability
+  `theta_child[i, l]` (which defines `rho` / ECV) is shared across a child's visits
+  and each visit adds a deviation `sigma_admin[l] · z_admin[a]`. The likelihood is
+  vectorised.
+- **`build_pair_matrix()`** (wide, for the mIRT route in 08 and the simulator in 10)
+  now uses the latest administration per child × language — never a collapse.
+
+The headline refits use `admins = "latest"`, the cross-sectional design the model
+was built for, with each child's correct age. The all-visits variant asks a
+slightly different question (the correlation of children's *stable* abilities).
+
+## Sample health (per administration)
+
+```{r health}
+pairs |>
+  mutate(h = map2(lang_a, lang_b, \(a, b) sample_health(item_table, df_demogs, c(a, b)))) |>
+  select(pair, h) |> unnest(h) |>
+  transmute(pair, language, administrations = n_admins,
+            `median vocabulary` = vocab_median,
+            `% administrations < 5 words` = sprintf("%.0f%%", 100 * frac_floor),
+            `% children with exposure` = sprintf("%.0f%%", 100 * exposure_coverage)) |>
+  kable(caption = "Floor and exposure coverage, now computed per administration.") |>
+  kable_styling(full_width = FALSE) |>
+  collapse_rows(1, valign = "top")
+```
+
+# 4. Results: cross-language ability correlation
+
+```{r rho-forest, fig.height = 3.6}
+rho_tbl <- done |>
+  mutate(d = map(file, draws_of),
+         rho_med = map_dbl(d, \(x) median(x$rho)),
+         lo = map_dbl(d, \(x) quantile(x$rho, .025)),
+         hi = map_dbl(d, \(x) quantile(x$rho, .975))) |>
+  mutate(version = factor(version, names(pal)),
+         pair = factor(pair, rev(pairs$pair)))
+ggplot(rho_tbl, aes(rho_med, pair, colour = version, shape = version)) +
+  geom_vline(xintercept = c(0, 1), colour = "grey70", linewidth = 0.4) +
+  geom_linerange(aes(xmin = lo, xmax = hi), linewidth = 0.9,
+                 position = position_dodge(width = 0.55)) +
+  geom_point(size = 2.8, position = position_dodge(width = 0.55)) +
+  scale_colour_manual(values = pal, drop = FALSE) +
+  scale_shape_manual(values = shp, drop = FALSE) +
+  scale_x_continuous(limits = c(0, 1), breaks = seq(0, 1, .2)) +
+  labs(x = expression(rho~"(posterior median, 95% CI)"), y = NULL,
+       title = "Correlation of the two language abilities",
+       subtitle = "0 = independent lexicons, 1 = a single lexicon",
+       caption = if (any(rho_tbl$version == "After fix, all visits"))
+         "All visits: correlation of stable (across-visit) abilities; the other estimates are per visit.")
+```
+
+```{r results-table}
+param_row <- function(d) {
+  tibble(rho = fmt_ci(d$rho), ECV = fmt_ci(d$ecv),
+         c_shared = fmt_ci(c_shared_of(d)),
+         `sigma_s (L1)` = fmt_ci(d$`sigma_s[1]`), `sigma_s (L2)` = fmt_ci(d$`sigma_s[2]`),
+         `sigma_admin (L1 / L2)` = if ("sigma_admin[1]" %in% names(d) && any(d$`sigma_admin[1]` > 0))
+           sprintf("%.2f / %.2f", median(d$`sigma_admin[1]`), median(d$`sigma_admin[2]`)) else "—")
+}
+done |>
+  mutate(row = map(file, \(f) param_row(draws_of(f)))) |>
+  select(pair, version, row) |> unnest(row) |>
+  kable(caption = "Variance components (posterior median [95% CI]). L1/L2 = first/second language of the pair.") |>
+  kable_styling(full_width = FALSE, font_size = 12) |>
+  collapse_rows(1, valign = "top")
+```
+
+```{r all-visits}
+# In the all-visits model a single visit's ability is stable part + visit deviation,
+# so the per-visit correlation is c_shared / sqrt(v1 v2) with v_l including sigma_admin^2
+av <- done |> filter(short == "EN-SP", version == "After fix, all visits")
+if (nrow(av)) {
+  d  <- draws_of(av$file)
+  v1 <- d$c_shared + d$`sigma_s[1]`^2 + d$`sigma_admin[1]`^2
+  v2 <- d$c_shared + d$`sigma_s[2]`^2 + d$`sigma_admin[2]`^2
+  av_rho_visit  <- fmt_ci(d$c_shared / sqrt(v1 * v2))
+  av_rho_stable <- fmt_ci(d$rho)
+  av_stable_share <- sprintf("%.0f%% / %.0f%%",
+    100 * median((d$c_shared + d$`sigma_s[1]`^2) / v1),
+    100 * median((d$c_shared + d$`sigma_s[2]`^2) / v2))
+}
+```
+
+```{r all-visits-text, results = "asis"}
+if (nrow(av)) cat(paste0(
+  "## Stable vs. single-visit correlation (EN (Am) × ES (Mex), all visits)\n\n",
+  "The all-visits fit splits each visit's ability into a stable child-level part ",
+  "and a visit-specific deviation (`sigma_admin`), independent across the two ",
+  "languages. Its `rho` = **", av_rho_stable, "** is the correlation of children's ",
+  "*stable* English and Spanish abilities. The correlation it implies for a *single* ",
+  "visit, where the deviation is included, is **", av_rho_visit, "**. That agrees ",
+  "with the latest-visit fit, so the two designs are consistent. The stable part is ",
+  av_stable_share, " (English / Spanish) of a single visit's age- and ",
+  "exposure-adjusted ability variance. Single-visit figures are the like-for-like ",
+  "comparison with the cross-sectional samples (EN (Br) × ES (Eur), NO × PL), where ",
+  "stable and visit-specific variance cannot be separated.\n"))
+```
+
+## Why `rho` fell for EN (Am) × ES (Mex)
+
+The shared covariance `c_shared` roughly halves while the language-specific
+variances `sigma_s` barely change. A descriptive analogue makes the mechanism
+visible without the IRT model: correlate each child's English and Spanish
+vocabulary (logit proportion produced) after regressing out exposure, with and
+without also regressing out age.
+
+```{r decomposition}
+lg <- \(x) qlogis(pmin(pmax(x, 0.005), 0.995))
+partial_r <- function(d, exp_tbl, age_adj) {
+  d <- d |> left_join(exp_tbl, by = c("child_id", "language")) |>
+    group_by(language) |> mutate(e = coalesce(e, median(e, na.rm = TRUE))) |> ungroup()
+  f <- if (age_adj) v ~ e + ns(age, 3) else v ~ e
+  r <- d |> group_by(language) |>
+    mutate(res = resid(lm(f, data = pick(everything())))) |> ungroup() |>
+    select(child_id, language, res) |> pivot_wider(names_from = language, values_from = res)
+  cor(r[[2]], r[[3]], use = "complete.obs")
+}
+decomp <- pairs |> mutate(res = pmap(list(short, lang_a, lang_b), \(s, a, b) {
+  x <- built$data[[s]]
+  exp_tbl <- child_language_exposure(df_demogs, c(a, b)) |>
+    select(child_id, language, e = exposure_proportion)
+  oldv <- as_tibble(x$old$resp, rownames = "child_id") |>
+    pivot_longer(-child_id, names_to = "uid", values_to = "y") |> filter(!is.na(y)) |>
+    left_join(x$old$item_lookup |> select(uid, language), by = "uid") |>
+    group_by(child_id, language) |> summarise(v = lg(mean(y)), .groups = "drop") |>
+    left_join(x$old$covdata |> select(child_id, age), by = "child_id")
+  latv <- x$latest$obs |> group_by(child_id, language) |>
+    summarise(v = lg(mean(y)), age = mean(age), .groups = "drop")
+  tibble(`Before fix: exposure` = partial_r(oldv, exp_tbl, FALSE),
+         `Before fix: + age` = partial_r(oldv, exp_tbl, TRUE),
+         `Latest visit: exposure` = partial_r(latv, exp_tbl, FALSE),
+         `Latest visit: + age` = partial_r(latv, exp_tbl, TRUE))
+})) |> select(pair, res) |> unnest(res)
+decomp |>
+  mutate(across(-pair, \(x) sprintf("%.2f", x))) |>
+  kable(caption = "Partial correlation of L1 and L2 vocabulary (logit proportion produced), controlling for exposure, then also for a natural-spline age term.") |>
+  kable_styling(full_width = FALSE) |>
+  add_header_above(c(" " = 1, "Visits collapsed, child-level age" = 2,
+                     "Latest administration, its own age" = 2))
+```
+
+Adjusting for age lowers the cross-language correlation in every sample, because
+age-driven growth raises both languages together. In the two cross-sectional
+pairs that adjustment was always possible (their ages were right), so the
+before/after columns barely differ. In EN (Am) × ES (Mex) before the fix,
+"adjusting for age" did almost nothing, because the age it was given carried no
+signal; with each administration's real age the adjustment takes effect. That
+accounts for most of the drop; a smaller part comes from using one administration
+rather than "ever produced".
+
+# 5. Age and exposure effects
+
+The age effect on ability (the natural-spline term), shown relative to 24 months.
+Before the fix the EN (Am) × ES (Mex) curve was U-shaped — 18-month-olds above
+24-month-olds — and the EN (Br) × ES (Eur) fit predated the spline (linear age).
+
+```{r age-curves, fig.height = 4}
+curve_tbl <- done |>
+  mutate(cur = pmap(list(short, file), \(s, f) {
+    rng <- quantile(built$data[[s]]$latest$admins$age, c(.05, .95))
+    ages <- seq(floor(rng[1]), ceiling(rng[2]), by = 0.5)
+    ages <- sort(unique(c(ages, 24)))
+    d <- draws_of(f)
+    ba <- as.matrix(d[, grep("^beta_age(\\[|$)", names(d)), drop = FALSE])
+    m <- age_effect_draws(cache[[f]]$basis, ba, ages)
+    m <- m - m[, ages == 24]
+    tibble(age = ages, med = apply(m, 2, median),
+           lo = apply(m, 2, quantile, .025), hi = apply(m, 2, quantile, .975))
+  })) |>
+  select(pair, version, cur) |> unnest(cur) |>
+  mutate(version = factor(version, names(pal)), pair = factor(pair, pairs$pair))
+ggplot(curve_tbl, aes(age, med, colour = version, fill = version)) +
+  geom_hline(yintercept = 0, colour = "grey70", linewidth = 0.4) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.15, colour = NA) +
+  geom_line(aes(linetype = version), linewidth = 0.9) +
+  facet_wrap(~pair, nrow = 1, scales = "free_x") +
+  scale_colour_manual(values = pal) + scale_fill_manual(values = pal) +
+  scale_linetype_manual(values = c("Before fix" = "22", "After fix" = "solid",
+                                   "After fix, all visits" = "41")) +
+  labs(x = "Age (months)", y = "Ability relative to 24 months (logits)",
+       title = "Fitted age effect on lexical ability",
+       subtitle = "Posterior median and 95% band; each fit's own age range (5th–95th percentile)")
+```
+
+```{r exposure-table}
+done |>
+  mutate(row = map(file, \(f) {
+    d <- draws_of(f); sdv <- cache[[f]]$basis$sd
+    tibble(`beta_exp (L1)` = fmt_ci(d$`beta_exp[1]`), `beta_exp (L2)` = fmt_ci(d$`beta_exp[2]`),
+           `age × exposure (L1), per month` = fmt_ci(d$`beta_age_exp[1]` / sdv),
+           `age × exposure (L2), per month` = fmt_ci(d$`beta_age_exp[2]` / sdv))
+  })) |>
+  select(pair, version, row) |> unnest(row) |>
+  kable(caption = "Exposure main effects (centred exposure proportion) and the age × exposure interaction, rescaled to per-month.") |>
+  kable_styling(full_width = FALSE, font_size = 12) |>
+  collapse_rows(1, valign = "top")
+```
+
+Exposure remains the dominant driver of *which* language's words a child
+produces, and its main effect is essentially unchanged by the fix.
+
+# 6. Convergence
+
+```{r diagnostics}
+done |>
+  mutate(dg = map(file, \(f) cache[[f]]$diag)) |>
+  select(pair, version, thin, dg) |> unnest(dg) |>
+  transmute(pair, version, `items kept` = paste0("1 in ", thin),
+            observations = if_else(is.na(N), "—", format(N, big.mark = ",")),
+            divergences, `max R-hat` = sprintf("%.3f", max_rhat),
+            `min n_eff (rho, ECV)` = round(min_neff),
+            `sampling time (h)` = sprintf("%.1f", hours)) |>
+  kable(caption = "4 chains × (1000 warmup + 1000 sampling) unless noted; max R-hat over all saved parameters.") |>
+  kable_styling(full_width = FALSE, font_size = 12) |>
+  collapse_rows(1, valign = "top")
+```
+
+# 7. Caveats and open items
+
+- **Comparisons are not perfectly like-for-like.** The pre-fix EN (Am) × ES (Mex)
+  reference is the full 1665-item fit with concept linking; the corrected fit uses
+  1 in 3 items without linking. On the pre-fix data, thinning and linking did not
+  move `rho` (0.585 thinned vs 0.587 full), but that check has not been repeated on
+  the corrected data. The pre-fix EN (Br) × ES (Eur) fit used a linear age term.
+- **Repeated visits.** The headline corrected EN (Am) × ES (Mex) estimate uses
+  each child's latest visit only. The all-visits model has no child-specific growth
+  rates: growth differences go into the per-visit deviation `sigma_admin`. That
+  deviation is also independent across the two languages, even when both CDIs were
+  filled in at the same visit. A shared visit-level component (a growth spurt, or
+  how the parent reported that day) is not modelled, so its effect on the
+  stable-ability `rho` is unknown.
+- **The EN–ES gap.** The two English–Spanish samples now differ clearly
+  (0.40 vs ~0.7). The British/European sample has the higher CDI floor; the
+  American/Mexican one the wider, longitudinal age range. Which drives the gap is
+  unresolved.
+- **Calibration.** The SBC recovery check in `09` used the pre-fix EN–SP design
+  and has not been rerun.
+`r if (nrow(pending)) paste0("- **Not yet fitted:** ", paste(pending$label, collapse = "; "), ". Re-knit after they finish; the cache picks up new fits automatically.") else ""`
+
+# Reproducing
+
+Data (`data/items.rds`, `data/demographics.rds`, `data/instruments/`) are
+embargoed; this report shows aggregates only. New fits:
+
+```
+Rscript scripts/fit_dim_irt.R latest 3 EN-SP-latest-thin3
+Rscript scripts/fit_dim_irt.R all    3 EN-SP-all-thin3
+Rscript scripts/fit_dim_irt.R latest 2 ENGB-ESEU-latest-thin2 1000 1000 "English (British)" "Spanish (European)" 0
+Rscript scripts/fit_dim_irt.R latest 2 NO-PL-latest-thin2     1000 1000 "Norwegian" "Polish"
+```
+
+Pre-fix fits are read from `params$old_models_dir`
+(`r params$old_models_dir`), and the pre-fix pipeline is taken from git at
+`r params$old_commit`.

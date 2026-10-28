@@ -62,7 +62,9 @@ knitr::opts_chunk$set(message = FALSE, warning = FALSE)
 # Data — child-level wide response matrix
 
 Rows are **children** administered in *both* languages of the pair; columns are
-`uid`s from both languages; items off the child's form are `NA`. Item difficulty
+`uid`s from both languages; items off the child's form are `NA`. A child with
+several (longitudinal) administrations contributes only its latest one per
+language, with that administration's age — never a collapse across visits. Item difficulty
 outliers and thin items are dropped (they manufacture a spurious 2PL factor).
 
 ```{r}
