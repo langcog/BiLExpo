@@ -1,6 +1,6 @@
 # Is bilingual lexical ability one dimension, or several?
 
-**Status:** working draft, 2026-09; English (American) × Spanish (Mexican) corrected 2026-10 (see [Correction](#correction-longitudinal-administrations-2026-10)). Analyses live in [`08_o5_dimensionality_mirt.qmd`](08_o5_dimensionality_mirt.qmd), [`09_o5_dimensionality_bayes.qmd`](09_o5_dimensionality_bayes.qmd), [`10_o5_dimensionality_calibration.qmd`](10_o5_dimensionality_calibration.qmd), [`models/bilingual_dim_irt.stan`](models/bilingual_dim_irt.stan), [`scripts/dim_irt_helpers.R`](scripts/dim_irt_helpers.R). Underlying data (`data/items.rds`, `data/demographics.rds`, `data/instruments/`) is embargoed and not in the repo; only aggregate posterior summaries are reported here.
+**Status:** working draft, 2026-09; English (American) × Spanish (Mexican) corrected 2026-10 (see [Correction](#correction-longitudinal-administrations-2026-10)). Analyses live in [`08_o5_dimensionality_mirt.qmd`](08_o5_dimensionality_mirt.qmd), [`09_o5_dimensionality_bayes.qmd`](09_o5_dimensionality_bayes.qmd), [`10_o5_dimensionality_calibration.qmd`](10_o5_dimensionality_calibration.qmd), [`models/bilingual_dim_irt.stan`](models/bilingual_dim_irt.stan), [`scripts/dim_irt_helpers.R`](scripts/dim_irt_helpers.R). Underlying data (`data/items.rds`, `data/demographics.rds`, `data/instruments/`) is embargoed and not in the repo; only aggregate posterior summaries are reported here. The cross-language-transfer (accumulator) analysis has its own section under [Results](#cross-language-transfer-a-bilingual-accumulator-model-english--spanish-translation-equivalents) and lives in `models/bilingual_accum*.stan` and `scripts/*bilingual_accum*.R`.
 
 **In one line:** across three bilingual samples — English–Spanish (American and British/European) and Norwegian–Polish — lexical ability across a child's two languages is ~40–70% one shared dimension and the rest genuinely language-specific, decisively neither "one bilingual lexicon" nor "two independent ones." A trilingual sample was attempted but is unusable (severe CDI floor effects), and no other multilingual sample exists in the data.
 
@@ -131,6 +131,55 @@ Before believing the numbers above, we checked whether the Stan model can recove
 
 Recovery is good across the range with only a small (~0.02) low-side bias and no systematic inflation. This is the opposite failure mode from the confirmatory mIRT route (`08`), which — as an exploratory/near-exploratory multidimensional model on column-bound data — is expected to *overstate* multidimensionality; the Bayesian model does not carry that bias, so the `rho`/`ECV` numbers above can be read at face value rather than as a worst-case bound.
 
+### Cross-language transfer: a bilingual accumulator model (English × Spanish translation equivalents)
+
+*Added 2026-11. Code: `models/bilingual_accum*.stan`, `scripts/*bilingual_accum*.R`, `scripts/childes_freq_te.R`. Preliminary; see the caveats below.*
+
+The IRT model says **how much** of a child's lexical ability is shared across languages, not **why**. One mechanism is cross-language transfer: hearing a word's translation equivalent (*dog*) may count, in part, toward learning the word itself (*perro*). The accumulator models this directly, on a log-token scale: the chance a child produces a word rises with the log of the tokens heard, and a token of the translation equivalent counts as a fraction κ of a token of the word itself. <!-- TODO(George): cite the source of this log-token framework. The Stan header calls the age-slope parameter "Frank 2026's kappa" and the v1 commit message says "SM2"; neither is defined anywhere in the repo. -->
+
+For child *i* at administration *a* (age *t_a*), word *j* in language *l* with translation equivalent *j′* in the other language *l′*:
+
+```
+eta = λ · [ ξ_i + u_il + log( e_il · q_j^φ + κ_j · e_il′ · q_j′^φ ) + (1 + δ) · log(t_a / a0) − ψ_j ]
+κ_j = κ_cog if the translation-equivalent pair is an orthographic cognate, else κ_nc
+```
+
+`e_il` is the child's exposure share to language *l*; `q_j` is the word's relative child-directed frequency (CHILDES, target child excluded); `φ` is one estimated frequency exponent shared by both labels; `ξ_i` is shared child ability and `u_il` language-specific ability; `ψ_j` is item difficulty (language offset + concept effect + item residual). κ = 0 means separate registers (only own-label tokens count); κ = 1 means fully shared (exposure share is irrelevant). The age effect is reported as `age_slope_logit = λ(1 + δ)`. `rho_lang = σ_ξ² / (σ_ξ² + σ_u²)` is the same quantity as the IRT `rho` when the language-specific variances are equal, as they are here (one `σ_u`), though the two models differ in other ways (see caveats).
+
+**Data.** The same source as the IRT's EN (American) × ES (Mexican) sample, restricted to the 118 translation-equivalent concepts (236 items, of which only **15 pairs are orthographic cognates**) and to children with an exposure record for both languages (no imputation): 462 children, 1,713 administrations, 166,153 responses, 11–41 months. Zero CHILDES counts (3 English and 16 Spanish labels: multiword items, Mexican-specific words) are imputed from the translation equivalent's frequency.
+
+**Why four versions.**
+
+- **v1** (exposure share only) cannot separate λ from κ. In a simulation with λ = 1 and κ = 0.3 it recovered λ = 0.50 [0.34, 0.77] and κ = 0.09 [0.02, 0.24], with the truth outside both intervals, while the scale-free products came out right (posterior-mean λ·σ_ξ = 1.49 against a truth of 1.5). It also used the collapsed-visit age later corrected in the IRT pipeline.
+- **v2** added per-administration ages, word-level frequency (to give κ something item-level to be identified from) and a cognate-specific κ. On real data it pinned κ at exactly 0 with λ = 1.07 [0.95, 1.19]: the model applied CHILDES frequency at full weight, while the data put its elasticity at 0.29 (γ = −0.71), so any κ > 0 produced item-level boosts the data reject.
+- **v3** estimates one exponent φ for both labels. A simulation generated with φ = 0.3 recovers all 13 monitored parameters (every 95% interval covers the truth). On the real data φ turns out to be ≈ 0.03.
+- **v3-anchor** takes λ as data, so κ can be estimated conditional on a chosen λ.
+
+**Results** (EN × ES, posterior median [95% CI]):
+
+| fit | λ | κ non-cognate | κ cognate | κ cognate − κ non-cognate | φ | `rho_lang` | `age_slope_logit` |
+|---|---|---|---|---|---|---|---|
+| free λ | 2.30 [1.61, 3.73] | 0.178 [0.071, 0.353] | 0.251 [0.119, 0.432] | 0.070 [0.042, 0.100] | 0.027 [0.007, 0.072] | 0.41 [0.33, 0.49] | 6.00 [5.89, 6.11] |
+| free λ, concepts with imputed frequency dropped | 2.33 [1.62, 3.72] | 0.167 [0.057, 0.349] | 0.232 [0.095, 0.428] | 0.061 [0.032, 0.092] | 0.029 [0.006, 0.083] | 0.41 [0.33, 0.49] | 6.21 [6.09, 6.33] |
+| λ fixed at 0.6 | fixed | 0.001 [0.000, 0.004] | 0.031 [0.012, 0.064] | 0.030 [0.011, 0.062] | 0.432 [0.322, 0.552] | 0.29 [0.21, 0.38] | 5.99 [5.88, 6.10] |
+| λ fixed at 1.0 | fixed | 0.002 [0.000, 0.010] | 0.020 [0.009, 0.039] | 0.017 [0.008, 0.032] | 0.275 [0.191, 0.349] | 0.38 [0.29, 0.46] | 5.99 [5.88, 6.11] |
+| λ fixed at 1.2 | fixed | 0.011 [0.002, 0.033] | 0.034 [0.014, 0.079] | 0.023 [0.010, 0.048] | 0.184 [0.099, 0.266] | 0.40 [0.32, 0.48] | 6.00 [5.88, 6.11] |
+
+1. **Frequency carries no item-level signal, so only a λ–κ ridge is identified.** With λ free, transfer looks sizeable (κ ≈ 0.18–0.25) at λ ≈ 2.3, but φ ≈ 0.03, i.e. CHILDES frequency barely predicts which words a child produces. That removes the lever meant to separate λ from κ. Dropping the 16 concepts with imputed frequency changes nothing.
+2. **The amount of transfer depends on the λ you impose.** Fixing λ at 0.6–1.2 collapses transfer to roughly 0–3% of a token, and it moves with the anchor: non-cognate κ goes 0.001 → 0.011 and φ goes 0.43 → 0.18 as λ rises from 0.6 to 1.2.
+3. **Three things are stable across all five fits.** (a) Cognate transfer exceeds non-cognate transfer: the interval for κ_cog − κ_nc excludes 0 in every fit (smallest lower bound 0.008). (b) The age slope λ(1 + δ) ≈ 6.0 logit per log-age unit, although λ and δ individually are not identified (δ = 1.6 free, against 9.0 / 5.0 / 4.0 when anchored). (c) `rho_lang` is 0.29–0.41, bracketing the IRT `rho` of 0.40 [0.32, 0.47] for the same pair (latest-visit fit).
+
+**What this does and doesn't say.** The data cannot tell "λ ≈ 1.1 with essentially no transfer" (v2, the anchored fits) from "λ ≈ 2–4 with κ ≈ 0.2" (v3, free), so **this analysis makes no claim about the amount of cross-language transfer.** The only qualitative result that survives the ridge is a cognate advantage, and it rests on 15 concepts. The conceptual-vs-lexical question in the Limitations therefore stays open. What would identify κ is item-level variation in the translation-equivalent frequency ratio that actually predicts production, which is the lever the v2/v3 design relies on; CHILDES frequency does not supply it. The agreement of `rho_lang` with the IRT `rho` is suggestive but not a replication: the accumulator uses only the 118 translation-equivalent concepts, puts exposure on a log-token ruler rather than as a linear fixed effect, uses all administrations with no per-visit deviation, and `rho_lang` itself shifts with the anchor (0.29 → 0.40).
+
+**Caveats.**
+
+- *Exposure provenance.* Exposure shares are each child's first-listed record, fixed across visits: the behaviour of `child_language_exposure()` before the longitudinal-age fix. The IRT now uses per-administration exposure, and the current helper averages a child's records, so re-running `scripts/prep_bilingual_accum*.R` today will not reproduce these numbers exactly. The fits above were run on 2026-10-04 to 2026-10-10.
+- *Cognate flag.* An orthographic similarity (normalised Levenshtein) ≥ 0.5 between any pair of forms; crude, and only 15 of 118 pairs qualify.
+- *Anchor values.* The λ values 0.6, 1.0 and 1.2 are described in the code as the monolingual "rulers"; where they come from is not recorded in the repo. <!-- TODO(George): record the source of the anchor values 0.6 / 1.0 / 1.2. -->
+- *Sample.* English (American) × Spanish (Mexican) only (462 children, a subset of the IRT's 474).
+- *Simulation realism.* Simulated data are easier than the real data (mean produced 0.44 against 0.26), and the φ = 0.3 used to generate them is ten times the real-data estimate, so the v3 recovery check does not speak to the real-data regime.
+- *Sampler health.* 0 divergences in every fit but one (1 in the no-imputation fit), none at maximum treedepth, E-BFMI ≥ 0.67, max R-hat ≈ 1.01, minimum n_eff 352 (λ = 0.6 fit).
+
 ## Interpretation
 
 Across all three usable samples, lexical ability across a child's two languages is **neither a single shared lexicon nor two independent ones**: a substantial general dimension (~40–70% of reliable person-level variance) coexists with genuine, non-trivial language-specific ability, over and above what exposure and age explain. This is a **bifactor** picture — general ability plus language-specific residual ability — and it is the structure the model space was built to distinguish, not just to detect. That Norwegian–Polish (no shared script beyond Latin, no English, Germanic + Slavic, a different country and dataset) lands in the same range as English–Spanish is the main reason to think the result is a property of early bilingual lexical development rather than of one language pair or population.
@@ -144,7 +193,7 @@ Open: the exact split (0.40 / 0.56 / 0.70), and in particular why the two Englis
 - **Item thinning** — checked once, on the pre-correction EN-American × ES-Mexican data (full 1665-item fit gave the same `rho` as the thinned one); assumed to carry over.
 - **Age modeling.** The main age effect on ability is a natural spline (`age_spline_df = 3`); the age × exposure interaction is still linear in age. Age and exposure are taken per administration. Ability is a child-level random effect, with no child-specific growth rates: in the all-administrations variant, growth-rate differences land in the per-visit deviation `sigma_admin`.
 - **Repeated administrations.** The headline EN-American × ES-Mexican estimate (0.40) is per visit (latest visit only), comparable to the cross-sectional samples. Across all visits, stable abilities correlate at 0.63, but that model treats per-visit deviations as independent across languages and has no child-specific growth rates.
-- **Translation-equivalent (concept) linking** is off in the three thinned fits (`link_concepts` auto-disabled — item overlap below the 25% threshold) but *on* in the full 1665-item EN-American × ES-Mexican fit (~636 shared `uni_lemma`s), where it left `rho` unchanged. So the shared-concept structure isn't inflating `rho` — but the sharper conceptual-vs-lexical-representation question (does knowing *dog* predict knowing *perro* over and above general ability, and how much?) still needs its own targeted analysis.
+- **Translation-equivalent (concept) linking** is off in the three thinned fits (`link_concepts` auto-disabled — item overlap below the 25% threshold) but *on* in the full 1665-item EN-American × ES-Mexican fit (~636 shared `uni_lemma`s), where it left `rho` unchanged. So the shared-concept structure isn't inflating `rho` — but the sharper conceptual-vs-lexical-representation question (does knowing *dog* predict knowing *perro* over and above general ability, and how much?) is still open. The accumulator analysis above attacks it directly but could not identify the amount of transfer: only a λ–κ ridge is identified, because CHILDES frequency (φ ≈ 0.03) supplies no item-level signal. It does find a cognate advantage, on 15 concepts.
 - **Semantic (lexical-class) sub-structure** — is any of the language-specific variance actually *semantic* (a noun factor, a predicate factor)? — was part of the original design (`M_class` in `08`) but hasn't been fit on real data; the mIRT convergence failure applies, and it would need the Stan model extended with lexical-class-specific factors.
 - **Single calibration replicate per condition.** The SBC check is indicative, not a full multi-replicate calibration, and it used the pre-correction EN–SP design (child-level ages); `10` (written against the now-abandoned mirt pipeline) has not been re-pointed at the Stan model.
 
